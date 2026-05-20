@@ -45,8 +45,23 @@ fn set_app_theme(app: AppHandle, theme: String) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
 #[tauri::command]
 async fn capture_and_ocr(app: AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe {
+            // Request permission (triggers the native dialog if not already shown)
+            CGRequestScreenCaptureAccess();
+        }
+    }
+
     let window = app.get_webview_window("main")
         .ok_or_else(|| "Janela principal não encontrada".to_string())?;
     
@@ -75,9 +90,16 @@ async fn capture_and_ocr(app: AppHandle) -> Result<String, String> {
     let _ = window.show();
     let _ = window.set_focus();
     
-    
     // Check if the file was created (screencapture -i creates the file if selection is successful)
     if !temp_image_path.exists() || !capture_status.success() {
+        #[cfg(target_os = "macos")]
+        {
+            unsafe {
+                if !CGPreflightScreenCaptureAccess() {
+                    return Err("Permissão de Gravação de Tela necessária. Por favor, ative o acesso do LingoSnap em 'Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela' e tente novamente.".to_string());
+                }
+            }
+        }
         return Err("Captura cancelada ou falhou".to_string());
     }
     

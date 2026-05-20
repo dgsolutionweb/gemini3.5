@@ -5,8 +5,8 @@ export interface HistoryItem {
   id: string;
   sourceText: string;
   translatedText: string;
-  sourceLang: 'pt' | 'en';
-  targetLang: 'pt' | 'en';
+  sourceLang: string;
+  targetLang: string;
   timestamp: number;
 }
 
@@ -37,10 +37,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
-  const filteredHistory = history.filter(item => 
-    item.sourceText.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.translatedText.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const safeHistory = Array.isArray(history) ? history : [];
+  const filteredHistory = safeHistory.filter(item => {
+    const source = item?.sourceText || '';
+    const translated = item?.translatedText || '';
+    return source.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      translated.toLowerCase().includes(searchQuery.toLowerCase());
+  });
 
   const formatTime = (timestamp: number) => {
     const date = new Date(timestamp);

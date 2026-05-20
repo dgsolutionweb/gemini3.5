@@ -14,6 +14,7 @@ export const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
   apiKey
 }) => {
   const isAiMode = (apiMode === 'gemini' || apiMode === 'openai' || apiMode === 'openrouter') && apiKey.trim() !== '';
+  const safeCorrections = Array.isArray(corrections) ? corrections : [];
 
   return (
     <div className="corrections-panel">
@@ -21,15 +22,15 @@ export const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
         <div className="corrections-title">
           <Sparkles size={16} className="text-secondary" />
           <span>Análise Gramatical e Ortográfica</span>
-          {corrections.length > 0 && (
-            <span className="corrections-badge">{corrections.length}</span>
+          {safeCorrections.length > 0 && (
+            <span className="corrections-badge">{safeCorrections.length}</span>
           )}
         </div>
       </div>
 
       <div className="corrections-body">
-        {corrections.length > 0 ? (
-          corrections.map((corr, idx) => (
+        {safeCorrections.length > 0 ? (
+          safeCorrections.map((corr, idx) => (
             <div key={idx} className="correction-card">
               <div className="correction-words">
                 <span className="word-original">{corr.original}</span>

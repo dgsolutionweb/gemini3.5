@@ -8,13 +8,25 @@ import {
   CornerDownLeft, 
   AlertCircle,
   Menu,
-  Crop
+  Crop,
+  BookOpen
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { Sidebar, HistoryItem } from "./components/Sidebar";
 import { SettingsModal } from "./components/SettingsModal";
 import { CorrectionPanel } from "./components/CorrectionPanel";
 import { translateText, Correction } from "./services/translationService";
+import { generateLesson, LessonResult } from "./services/lessonService";
+
+const languageNames: Record<string, string> = {
+  auto: "Auto-Detectar",
+  pt: "Português",
+  en: "Inglês",
+  es: "Espanhol",
+  fr: "Francês",
+  de: "Alemão",
+  it: "Italiano"
+};
 
 function App() {
   // --- Persisted States via localStorage ---
@@ -79,8 +91,14 @@ function App() {
   const [translatedText, setTranslatedText] = useState("");
   const [corrections, setCorrections] = useState<Correction[]>([]);
   
-  const [sourceLang, setSourceLang] = useState<'pt' | 'en'>("pt");
-  const [targetLang, setTargetLang] = useState<'pt' | 'en'>("en");
+  const [sourceLang, setSourceLang] = useState<string>("auto");
+  const [targetLang, setTargetLang] = useState<string>("pt");
+
+  // --- Study Tab & Lesson States ---
+  const [activeTab, setActiveTab] = useState<'translation' | 'lesson'>('translation');
+  const [lesson, setLesson] = useState<LessonResult | null>(null);
+  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
+  const [isGeneratingLesson, setIsGeneratingLesson] = useState(false);
   
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -144,7 +162,7 @@ function App() {
   }, [history]);
 
   // --- Translation Core Logic ---
-  const performTranslation = useCallback(async (textToTranslate: string, sLang: 'pt' | 'en', tLang: 'pt' | 'en') => {
+  const performTranslation = useCallback(async (textToTranslate: string, sLang: string, tLang: string) => {
     const query = textToTranslate.trim();
     if (!query) {
       setTranslatedText("");
@@ -163,11 +181,22 @@ function App() {
       setTranslatedText(result.translatedText);
       setCorrections(result.corrections);
 
+      const finalSourceLang = sLang === 'auto' ? (result.detectedLanguage || 'en') : sLang;
+      let finalTargetLang = tLang;
+      if (sLang === 'auto') {
+        if (finalSourceLang === 'en') finalTargetLang = 'pt';
+        else if (finalSourceLang === 'pt') finalTargetLang = 'en';
+      }
+
       // Setup a timer to commit this translation to history after typing pauses
       if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
       historyTimerRef.current = setTimeout(() => {
-        commitToHistory(query, result.translatedText, sLang, tLang);
+        commitToHistory(query, result.translatedText, finalSourceLang, finalTargetLang);
       }, 2500);
+
+      // Clear lessons when text updates
+      setLesson(null);
+      setSelectedAnswer(null);
 
     } catch (err: any) {
       console.error(err);
@@ -200,33 +229,31 @@ function App() {
   }, [sourceText, sourceLang, targetLang, autoTranslate, performTranslation]);
 
   // Commit history entry with duplicate control and incremental grouping
-  const commitToHistory = (source: string, translated: string, sLang: 'pt' | 'en', tLang: 'pt' | 'en') => {
+  const commitToHistory = (source: string, translated: string, sLang: string, tLang: string) => {
     if (!source.trim() || !translated.trim()) return;
 
     setHistory(prev => {
       const now = Date.now();
-      const lastItem = prev[0];
+      const prevHistory = Array.isArray(prev) ? prev : [];
+      const lastItem = prevHistory[0];
 
       // If the last item is very recent (under 15s) and matches the language pair, replace/extend it
       if (lastItem && (now - lastItem.timestamp < 15000) && lastItem.sourceLang === sLang && lastItem.targetLang === tLang) {
-        const updated = [...prev];
+        const updated = [...prevHistory];
         updated[0] = {
-          id: lastItem.id,
+          ...lastItem,
           sourceText: source,
           translatedText: translated,
-          sourceLang: sLang,
-          targetLang: tLang,
           timestamp: now
         };
         return updated;
       }
 
-      // Check if it's an exact duplicate of the last entry
+      // If text is duplicate, don't re-add
       if (lastItem && lastItem.sourceText === source && lastItem.translatedText === translated && lastItem.sourceLang === sLang) {
-        return prev;
+        return prevHistory;
       }
 
-      // Prepend new history entry
       const newItem: HistoryItem = {
         id: Math.random().toString(36).substring(2, 9),
         sourceText: source,
@@ -235,8 +262,7 @@ function App() {
         targetLang: tLang,
         timestamp: now
       };
-      
-      return [newItem, ...prev].slice(0, 100);
+      return [newItem, ...prevHistory].slice(0, 100);
     });
   };
 
@@ -252,28 +278,27 @@ function App() {
       const recognizedText = await invoke<string>("capture_and_ocr");
       if (recognizedText) {
         setSourceText(recognizedText);
-        
-        // Auto-detect language of the OCR text (basic heuristic)
-        const isEnglish = /[a-zA-Z]/g.test(recognizedText) && 
-          (/\b(the|and|of|to|a|is|in|that|it|you|was|for|on|are|as|with|his|they|i|at|be|this|have|from|or|one|had|by|word|but|not|what|all|were|we|when|your|can|said|there|use|an|each|which|she|do|how|their|if|will|up|other|about|out|many|then|them|these|so|some|her|would|make|like|him|into|time|has|look|two|more|write|go|see|number|no|way|could|people|my|than|first|water|been|call|who|oil|its|now|find|long|down|day|did|get|come|made|may|part)\b/i.test(recognizedText));
-
-        const newSourceLang = isEnglish ? "en" : "pt";
-        const newTargetLang = isEnglish ? "pt" : "en";
-        
-        setSourceLang(newSourceLang);
-        setTargetLang(newTargetLang);
-        setCorrections([]);
+        setLesson(null);
+        setSelectedAnswer(null);
         
         // Trigger translation manually if autoTranslate is off
         if (!autoTranslate) {
           setIsLoading(true);
           try {
             const { key, model } = getActiveKeyAndModel(apiMode);
-            const result = await translateText(recognizedText, newSourceLang, newTargetLang, apiMode, key, model);
+            const result = await translateText(recognizedText, sourceLang, targetLang, apiMode, key, model);
             setTranslatedText(result.translatedText);
             setCorrections(result.corrections);
+
+            const finalSourceLang = sourceLang === 'auto' ? (result.detectedLanguage || 'en') : sourceLang;
+            let finalTargetLang = targetLang;
+            if (sourceLang === 'auto') {
+              if (finalSourceLang === 'en') finalTargetLang = 'pt';
+              else if (finalSourceLang === 'pt') finalTargetLang = 'en';
+            }
+
             // Save to history
-            commitToHistory(recognizedText, result.translatedText, newSourceLang, newTargetLang);
+            commitToHistory(recognizedText, result.translatedText, finalSourceLang, finalTargetLang);
           } catch (err: any) {
             setError(err?.message || "Erro na tradução do texto capturado");
           } finally {
@@ -306,14 +331,48 @@ function App() {
     // Swap text and language pairs
     setSourceText(tempTarget);
     setTranslatedText(tempSource);
-    setSourceLang(targetLang);
-    setTargetLang(sourceLang);
+    
+    let newSourceLang = targetLang;
+    let newTargetLang = sourceLang === 'auto' ? 'pt' : sourceLang;
+    
+    setSourceLang(newSourceLang);
+    setTargetLang(newTargetLang);
     setCorrections([]);
     setError(null);
+    setLesson(null);
+    setSelectedAnswer(null);
 
     // If auto translate is enabled, trigger translate immediately for the new text
     if (autoTranslate && tempTarget.trim()) {
-      performTranslation(tempTarget, targetLang, sourceLang);
+      performTranslation(tempTarget, newSourceLang, newTargetLang);
+    }
+  };
+
+  const handleGenerateLesson = async () => {
+    if (!sourceText.trim() || !translatedText.trim()) return;
+    setIsGeneratingLesson(true);
+    setSelectedAnswer(null);
+    try {
+      const { key, model } = getActiveKeyAndModel(apiMode);
+      let actualSource = sourceLang;
+      if (sourceLang === 'auto') {
+        const englishWords = /\b(the|and|of|to|is|in|that|it|he|was|for|on|are|as|with|his|they|i|at|be|this|have|from|or|one|had|by|word|but|not|what|all|were|we|when|your|can|said|there|use|an|each|which|she|do|how|their|if)\b/i;
+        actualSource = englishWords.test(sourceText) ? 'en' : 'pt';
+      }
+      const lessonResult = await generateLesson(
+        sourceText,
+        translatedText,
+        actualSource,
+        targetLang,
+        apiMode,
+        key,
+        model
+      );
+      setLesson(lessonResult);
+    } catch (err: any) {
+      console.error("Erro ao gerar lição:", err);
+    } finally {
+      setIsGeneratingLesson(false);
     }
   };
 
@@ -442,7 +501,7 @@ function App() {
   };
 
   // Web Speech synthesis
-  const speakText = (text: string, lang: 'pt' | 'en') => {
+  const speakText = (text: string, lang: string) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     
     window.speechSynthesis.cancel();
@@ -457,10 +516,24 @@ function App() {
       selectedVoice = voices.find(v => v.name === ttsVoice);
     }
     
+    let actualLang = lang;
+    if (lang === 'auto') {
+      const englishWords = /\b(the|and|of|to|is|in|that|it|he|was|for|on|are|as|with|his|they|i|at|be|this|have|from|or|one|had|by|word|but|not|what|all|were|we|when|your|can|said|there|use|an|each|which|she|do|how|their|if)\b/i;
+      actualLang = englishWords.test(text) ? 'en' : 'pt';
+    }
+    
     if (!selectedVoice) {
-      const langCode = lang === 'pt' ? 'pt-BR' : 'en-US';
+      const langCodeMap: Record<string, string> = {
+        pt: 'pt-BR',
+        en: 'en-US',
+        es: 'es-ES',
+        fr: 'fr-FR',
+        de: 'de-DE',
+        it: 'it-IT'
+      };
+      const langCode = langCodeMap[actualLang] || 'en-US';
       selectedVoice = voices.find(v => v.lang.includes(langCode)) || 
-                      voices.find(v => v.lang.startsWith(lang.toLowerCase()));
+                      voices.find(v => v.lang.startsWith(actualLang.toLowerCase()));
     }
     
     if (selectedVoice) {
@@ -506,9 +579,26 @@ function App() {
             </div>
 
             <div className="header-center">
-              <span className="language-label">
-                {sourceLang === 'pt' ? 'Português' : 'Inglês'}
-              </span>
+              <select 
+                className="lang-select" 
+                value={sourceLang}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSourceLang(val);
+                  if (sourceText.trim()) {
+                    performTranslation(sourceText, val, targetLang);
+                  }
+                }}
+              >
+                <option value="auto">Auto-Detectar</option>
+                <option value="pt">Português</option>
+                <option value="en">Inglês</option>
+                <option value="es">Espanhol</option>
+                <option value="fr">Francês</option>
+                <option value="de">Alemão</option>
+                <option value="it">Italiano</option>
+              </select>
+              
               <button 
                 className="lang-swap-btn" 
                 onClick={handleInvertLanguages}
@@ -516,9 +606,25 @@ function App() {
               >
                 <ArrowLeftRight size={13} />
               </button>
-              <span className="language-label">
-                {targetLang === 'pt' ? 'Português' : 'Inglês'}
-              </span>
+
+              <select 
+                className="lang-select" 
+                value={targetLang}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setTargetLang(val);
+                  if (sourceText.trim()) {
+                    performTranslation(sourceText, sourceLang, val);
+                  }
+                }}
+              >
+                <option value="pt">Português</option>
+                <option value="en">Inglês</option>
+                <option value="es">Espanhol</option>
+                <option value="fr">Francês</option>
+                <option value="de">Alemão</option>
+                <option value="it">Italiano</option>
+              </select>
             </div>
 
             <div className="header-right">
@@ -561,7 +667,12 @@ function App() {
               <div className="pane-textarea-wrapper">
                 <textarea
                   className="pane-textarea"
-                  placeholder={sourceLang === 'pt' ? 'Digite o texto em português...' : 'Write text in English...'}
+                  placeholder={
+                    sourceLang === 'auto' ? 'Recorte a tela ou digite seu texto aqui...' :
+                    sourceLang === 'pt' ? 'Digite o texto em português...' :
+                    sourceLang === 'en' ? 'Write text in English...' :
+                    `Escreva no idioma selecionado (${languageNames[sourceLang] || sourceLang})...`
+                  }
                   value={sourceText}
                   onChange={(e) => setSourceText(e.target.value)}
                   onKeyDown={handleKeyDown}
@@ -617,44 +728,180 @@ function App() {
 
             {/* Translated Target Pane (Right) */}
             <div className="pane">
-              <div className="pane-header">
-                <span className="pane-title">Tradução</span>
-                {isLoading && autoTranslate && <div className="spinner" style={{ borderColor: 'rgba(0,0,0,0.1)', borderTopColor: 'var(--accent-color)' }} />}
+              <div className="pane-header" style={{ justifyContent: 'space-between' }}>
+                <span className="pane-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  Resultado
+                  {isLoading && autoTranslate && <div className="spinner" style={{ borderColor: 'rgba(0,0,0,0.1)', borderTopColor: 'var(--accent-color)', width: '12px', height: '12px', borderWidth: '2px' }} />}
+                </span>
+                <div className="pane-tabs">
+                  <button 
+                    className={`pane-tab ${activeTab === 'translation' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('translation')}
+                  >
+                    Tradução
+                  </button>
+                  <button 
+                    className={`pane-tab ${activeTab === 'lesson' ? 'active' : ''}`}
+                    onClick={() => {
+                      setActiveTab('lesson');
+                      if (!lesson && sourceText.trim() && translatedText.trim()) {
+                        handleGenerateLesson();
+                      }
+                    }}
+                    disabled={!sourceText.trim() || !translatedText.trim()}
+                  >
+                    Mini-Aula IA
+                  </button>
+                </div>
               </div>
               <div className="pane-textarea-wrapper">
-                {error ? (
-                  <div style={{ color: 'var(--error-color)', display: 'flex', gap: '8px', fontSize: '13px', padding: '8px', borderRadius: '6px', backgroundColor: 'rgba(255, 59, 48, 0.08)' }}>
-                    <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
-                    <div>{error}</div>
-                  </div>
+                {activeTab === 'translation' ? (
+                  error ? (
+                     <div style={{ color: 'var(--error-color)', display: 'flex', gap: '8px', fontSize: '13px', padding: '8px', borderRadius: '6px', backgroundColor: 'rgba(255, 59, 48, 0.08)' }}>
+                       <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                       <div>{error}</div>
+                     </div>
+                  ) : (
+                     <div 
+                       className="pane-target-display" 
+                       data-placeholder="A tradução aparecerá aqui..."
+                     >
+                       {translatedText}
+                     </div>
+                  )
                 ) : (
-                  <div 
-                    className="pane-target-display" 
-                    data-placeholder="A tradução aparecerá aqui..."
-                  >
-                    {translatedText}
+                  <div className="lesson-container">
+                    {isGeneratingLesson ? (
+                      <div className="lesson-empty-state">
+                        <div className="spinner" style={{ width: '24px', height: '24px', borderWidth: '3px', marginBottom: '8px' }} />
+                        <span>Gerando lição de fixação personalizada...</span>
+                      </div>
+                    ) : lesson ? (
+                      <>
+                        <div className="lesson-header" style={{ marginBottom: '12px' }}>
+                          <h3 className="lesson-title">{lesson.lessonTitle}</h3>
+                        </div>
+
+                        {/* Grammar Section */}
+                        {lesson.grammarPoints && lesson.grammarPoints.length > 0 && (
+                          <div style={{ marginBottom: '16px' }}>
+                            <div className="lesson-section-title">
+                              Gramática e Dicas
+                            </div>
+                            {lesson.grammarPoints.map((gp, i) => (
+                              <div key={i} className="lesson-card" style={{ marginBottom: '8px' }}>
+                                <div className="grammar-point-title">{gp.point}</div>
+                                <div className="grammar-point-desc">{gp.explanation}</div>
+                                <div className="lesson-example">
+                                  <strong>Exemplo:</strong> "{gp.exampleOriginal}"
+                                  <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>{gp.exampleTranslated}</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Vocabulary Section */}
+                        {lesson.vocabulary && lesson.vocabulary.length > 0 && (
+                          <div style={{ marginBottom: '16px' }}>
+                            <div className="lesson-section-title">
+                              Vocabulário
+                            </div>
+                            <div className="vocab-list">
+                              {lesson.vocabulary.map((vocab, i) => (
+                                <div key={i} className="lesson-card" style={{ marginBottom: '4px' }}>
+                                  <div className="vocab-word">{vocab.word}</div>
+                                  <div className="vocab-meaning">{vocab.meaning}</div>
+                                  <div className="vocab-usage">"{vocab.usage}"</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Quiz Section */}
+                        {lesson.quiz && lesson.quiz.question && (
+                          <div className="quiz-section">
+                            <div className="lesson-section-title">
+                              Quiz de Fixação
+                            </div>
+                            <div className="quiz-question">{lesson.quiz.question}</div>
+                            <div className="quiz-options">
+                              {lesson.quiz.options.map((option, idx) => {
+                                const isCorrect = idx === lesson.quiz.correctIndex;
+                                const isSelected = idx === selectedAnswer;
+                                
+                                let optionClass = "";
+                                if (selectedAnswer !== null) {
+                                  if (isCorrect) optionClass = "correct";
+                                  else if (isSelected) optionClass = "incorrect";
+                                }
+                                
+                                return (
+                                  <button
+                                    key={idx}
+                                    className={`quiz-option ${optionClass} ${selectedAnswer !== null ? 'disabled' : ''}`}
+                                    onClick={() => selectedAnswer === null && setSelectedAnswer(idx)}
+                                    disabled={selectedAnswer !== null}
+                                    style={{ width: '100%' }}
+                                  >
+                                    {option}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {selectedAnswer !== null && (
+                              <div className={`quiz-feedback ${selectedAnswer === lesson.quiz.correctIndex ? 'success' : 'fail'}`}>
+                                <strong style={{ display: 'block', marginBottom: '4px' }}>
+                                  {selectedAnswer === lesson.quiz.correctIndex ? "Correto! 🎉" : "Incorreto ❌"}
+                                </strong>
+                                <span>{lesson.quiz.explanation}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="lesson-empty-state">
+                        <span>Nenhuma lição disponível. Recorte um texto e clique em Gerar Aula.</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
               <div className="pane-footer">
-                <div className="action-group">
-                  <button 
-                    className="action-btn"
-                    onClick={() => speakText(translatedText, targetLang)}
-                    disabled={!translatedText}
-                    title="Ouvir tradução"
-                  >
-                    <Volume2 size={14} />
-                  </button>
-                  <button 
-                    className="action-btn"
-                    onClick={() => copyToClipboard(translatedText, false)}
-                    disabled={!translatedText}
-                    title="Copiar tradução"
-                  >
-                    {copiedTarget ? <Check size={14} style={{ color: 'var(--success-color)' }} /> : <Copy size={14} />}
-                  </button>
-                </div>
+                {activeTab === 'translation' ? (
+                  <div className="action-group">
+                    <button 
+                      className="action-btn"
+                      onClick={() => speakText(translatedText, targetLang)}
+                      disabled={!translatedText}
+                      title="Ouvir tradução"
+                    >
+                      <Volume2 size={14} />
+                    </button>
+                    <button 
+                      className="action-btn"
+                      onClick={() => copyToClipboard(translatedText, false)}
+                      disabled={!translatedText}
+                      title="Copiar tradução"
+                    >
+                      {copiedTarget ? <Check size={14} style={{ color: 'var(--success-color)' }} /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="action-group" style={{ width: '100%', justifyContent: 'center' }}>
+                    <button 
+                      className="lesson-generate-btn"
+                      onClick={handleGenerateLesson}
+                      disabled={isGeneratingLesson || !sourceText.trim() || !translatedText.trim()}
+                    >
+                      <BookOpen size={13} />
+                      <span>{lesson ? "Recriar Lição por IA" : "Gerar Lição por IA"}</span>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

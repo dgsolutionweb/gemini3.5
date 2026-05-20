@@ -9,30 +9,48 @@ export interface Correction {
 export interface TranslationResult {
   translatedText: string;
   corrections: Correction[];
+  detectedLanguage?: string;
 }
+
+const languageNames: Record<string, string> = {
+  pt: "Portuguese",
+  en: "English",
+  es: "Spanish",
+  fr: "French",
+  de: "German",
+  it: "Italian"
+};
 
 // Translate using Gemini API
 async function translateWithGemini(
   text: string,
-  sourceLang: 'pt' | 'en',
+  sourceLang: string,
+  targetLang: string,
   apiKey: string,
   modelName: string = 'gemini-1.5-flash'
 ): Promise<TranslationResult> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+  const targetName = languageNames[targetLang] || 'English';
 
-  const prompt = sourceLang === 'pt'
+  const prompt = sourceLang === 'auto'
     ? `You are an expert translator and grammarian.
-Translate the following text from Portuguese to English. 
-Detect and correct any spelling, orthographic, or grammatical errors in the Portuguese text. 
-Translate the corrected meaning into natural, correct English.
-In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
-Text to translate:
-"${text}"`
+Analyze the following source text:
+"${text}"
+
+1. Detect the language of the source text.
+2. If the detected language is English, translate it to Portuguese.
+3. If the detected language is Portuguese, translate it to English.
+4. If it is any other language, translate it to ${targetName}.
+5. Detect and correct any spelling, orthographic, or grammatical errors in the source text.
+6. Translate the corrected meaning into natural phrasing.
+7. In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
+8. In the detectedLanguage property, return the ISO 639-1 code of the detected language (e.g. "en", "pt", "es", "fr", "de", "it").`
     : `You are an expert translator and grammarian.
-Translate the following text from English to Portuguese.
-Detect and correct any spelling or grammatical errors in the English text.
-Translate the corrected meaning into natural, correct Portuguese.
+Translate the following text from ${languageNames[sourceLang] || 'Portuguese'} to ${targetName}.
+Detect and correct any spelling, orthographic, or grammatical errors in the source text.
+Translate the corrected meaning.
 In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
+In the detectedLanguage property, return "${sourceLang}".
 Text to translate:
 "${text}"`;
 
@@ -43,6 +61,10 @@ Text to translate:
       translatedText: {
         type: 'STRING',
         description: 'The final translated text in the target language.'
+      },
+      detectedLanguage: {
+        type: 'STRING',
+        description: 'The ISO 639-1 code of the detected language (e.g. "en", "pt", "es", "fr", "de", "it").'
       },
       corrections: {
         type: 'ARRAY',
@@ -67,7 +89,7 @@ Text to translate:
         }
       }
     },
-    required: ['translatedText', 'corrections']
+    required: ['translatedText', 'corrections', 'detectedLanguage']
   };
 
   try {
@@ -89,7 +111,7 @@ Text to translate:
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: responseSchema,
-          temperature: 0.1 // Low temperature for high accuracy/determinism
+          temperature: 0.1
         }
       })
     });
@@ -118,10 +140,20 @@ Text to translate:
 // Translate using MyMemory Free Translation API
 async function translateWithMyMemory(
   text: string,
-  sourceLang: 'pt' | 'en',
-  targetLang: 'pt' | 'en'
+  sourceLang: string,
+  targetLang: string
 ): Promise<TranslationResult> {
-  const langPair = `${sourceLang}|${targetLang}`;
+  let actualSource = sourceLang;
+  let actualTarget = targetLang;
+
+  // Local auto-detection heuristic for MyMemory
+  if (sourceLang === 'auto') {
+    const englishWords = /\b(the|and|of|to|is|in|that|it|he|was|for|on|are|as|with|his|they|i|at|be|this|have|from|or|one|had|by|word|but|not|what|all|were|we|when|your|can|said|there|use|an|each|which|she|do|how|their|if)\b/i;
+    actualSource = englishWords.test(text) ? 'en' : 'pt';
+    actualTarget = actualSource === 'en' ? 'pt' : 'en';
+  }
+
+  const langPair = `${actualSource}|${actualTarget}`;
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${langPair}`;
 
   try {
@@ -136,13 +168,9 @@ async function translateWithMyMemory(
     }
 
     const translatedText = data.responseData.translatedText;
-    
-    // In Free Mode, we do not have an LLM to analyze complex grammar, 
-    // but we can detect simple orthographic issues locally or just return a helper correction.
     const corrections: Correction[] = [];
     
-    // Quick client-side check for common Portuguese spelling omissions if translating from pt to en
-    if (sourceLang === 'pt') {
+    if (actualSource === 'pt') {
       const commonChecks = [
         { regex: /\bnao\b/gi, correct: 'não', explanation: "Falta do til (~)." },
         { regex: /\beu vo\b/gi, correct: 'eu vou', explanation: "Conjugação do verbo ir." },
@@ -164,7 +192,8 @@ async function translateWithMyMemory(
 
     return {
       translatedText,
-      corrections
+      corrections,
+      detectedLanguage: actualSource
     };
   } catch (error) {
     console.error("MyMemory translation error:", error);
@@ -175,7 +204,8 @@ async function translateWithMyMemory(
 // Translate using OpenAI or OpenRouter API
 async function translateWithOpenAI(
   text: string,
-  sourceLang: 'pt' | 'en',
+  sourceLang: string,
+  targetLang: string,
   apiKey: string,
   modelName: string,
   provider: 'openai' | 'openrouter'
@@ -184,19 +214,27 @@ async function translateWithOpenAI(
     ? 'https://api.openai.com/v1/chat/completions'
     : 'https://openrouter.ai/api/v1/chat/completions';
 
-  const prompt = sourceLang === 'pt'
+  const targetName = languageNames[targetLang] || 'English';
+
+  const prompt = sourceLang === 'auto'
     ? `You are an expert translator and grammarian.
-Translate the following text from Portuguese to English. 
-Detect and correct any spelling, orthographic, or grammatical errors in the Portuguese text. 
-Translate the corrected meaning into natural, correct English.
-In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
-Text to translate:
-"${text}"`
+Analyze the following source text:
+"${text}"
+
+1. Detect the language of the source text.
+2. If the detected language is English, translate it to Portuguese.
+3. If the detected language is Portuguese, translate it to English.
+4. If it is any other language, translate it to ${targetName}.
+5. Detect and correct any spelling, orthographic, or grammatical errors in the source text.
+6. Translate the corrected meaning into natural phrasing.
+7. In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
+8. In the detectedLanguage property, return the ISO 639-1 code of the detected language (e.g. "en", "pt", "es", "fr", "de", "it").`
     : `You are an expert translator and grammarian.
-Translate the following text from English to Portuguese.
-Detect and correct any spelling or grammatical errors in the English text.
-Translate the corrected meaning into natural, correct Portuguese.
+Translate the following text from ${languageNames[sourceLang] || 'Portuguese'} to ${targetName}.
+Detect and correct any spelling, orthographic, or grammatical errors in the source text.
+Translate the corrected meaning.
 In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
+In the detectedLanguage property, return "${sourceLang}".
 Text to translate:
 "${text}"`;
 
@@ -204,10 +242,11 @@ Text to translate:
 You must return your response as a JSON object matching this schema:
 {
   "translatedText": "string - The final translated text in the target language.",
+  "detectedLanguage": "string - The ISO 639-1 code of the detected language (e.g. 'en', 'pt', 'es').",
   "corrections": [
     {
       "original": "string - The incorrect word or segment from the source text.",
-      "corrected": "string - The corrected word or segment in the target language context, or corrected spelling in source.",
+      "corrected": "string - The corrected word or segment.",
       "explanation": "string - Explanation in Portuguese of why this was corrected."
     }
   ]
@@ -262,8 +301,8 @@ You must return your response as a JSON object matching this schema:
 // Main translation entry point
 export async function translateText(
   text: string,
-  sourceLang: 'pt' | 'en',
-  targetLang: 'pt' | 'en',
+  sourceLang: string,
+  targetLang: string,
   apiMode: 'gemini' | 'openai' | 'openrouter' | 'free',
   apiKey: string,
   modelName: string = 'gemini-1.5-flash'
@@ -273,13 +312,25 @@ export async function translateText(
     return { translatedText: '', corrections: [] };
   }
 
-  if (apiMode === 'gemini' && apiKey) {
-    return translateWithGemini(trimmed, sourceLang, apiKey, modelName);
-  } else if (apiMode === 'openai' && apiKey) {
-    return translateWithOpenAI(trimmed, sourceLang, apiKey, modelName, 'openai');
-  } else if (apiMode === 'openrouter' && apiKey) {
-    return translateWithOpenAI(trimmed, sourceLang, apiKey, modelName, 'openrouter');
-  } else {
-    return translateWithMyMemory(trimmed, sourceLang, targetLang);
+  let result: TranslationResult;
+  try {
+    if (apiMode === 'gemini' && apiKey) {
+      result = await translateWithGemini(trimmed, sourceLang, targetLang, apiKey, modelName);
+    } else if (apiMode === 'openai' && apiKey) {
+      result = await translateWithOpenAI(trimmed, sourceLang, targetLang, apiKey, modelName, 'openai');
+    } else if (apiMode === 'openrouter' && apiKey) {
+      result = await translateWithOpenAI(trimmed, sourceLang, targetLang, apiKey, modelName, 'openrouter');
+    } else {
+      result = await translateWithMyMemory(trimmed, sourceLang, targetLang);
+    }
+  } catch (error) {
+    console.error("Translation API execution failed, falling back to MyMemory:", error);
+    result = await translateWithMyMemory(trimmed, sourceLang, targetLang);
   }
+
+  return {
+    translatedText: result?.translatedText || '',
+    corrections: Array.isArray(result?.corrections) ? result.corrections : [],
+    detectedLanguage: result?.detectedLanguage || (sourceLang !== 'auto' ? sourceLang : 'en')
+  };
 }
