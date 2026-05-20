@@ -39,7 +39,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__ # tauri-action will replace this with the version in package.json
-          releaseName: 'Tradutor v__VERSION__'
-          releaseBody: 'Release do Tradutor macOS/Windows v__VERSION__.'
+          releaseName: 'LingoSnap v__VERSION__'
+          releaseBody: 'Release do LingoSnap macOS/Windows v__VERSION__.'
           releaseDraft: true
           prerelease: false
