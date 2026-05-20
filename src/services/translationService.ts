@@ -172,12 +172,99 @@ async function translateWithMyMemory(
   }
 }
 
+// Translate using OpenAI or OpenRouter API
+async function translateWithOpenAI(
+  text: string,
+  sourceLang: 'pt' | 'en',
+  apiKey: string,
+  modelName: string,
+  provider: 'openai' | 'openrouter'
+): Promise<TranslationResult> {
+  const url = provider === 'openai'
+    ? 'https://api.openai.com/v1/chat/completions'
+    : 'https://openrouter.ai/api/v1/chat/completions';
+
+  const prompt = sourceLang === 'pt'
+    ? `You are an expert translator and grammarian.
+Translate the following text from Portuguese to English. 
+Detect and correct any spelling, orthographic, or grammatical errors in the Portuguese text. 
+Translate the corrected meaning into natural, correct English.
+In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
+Text to translate:
+"${text}"`
+    : `You are an expert translator and grammarian.
+Translate the following text from English to Portuguese.
+Detect and correct any spelling or grammatical errors in the English text.
+Translate the corrected meaning into natural, correct Portuguese.
+In the corrections array, document all spelling corrections or grammatical improvements made, explaining them in Portuguese so the user understands what was corrected.
+Text to translate:
+"${text}"`;
+
+  const systemPrompt = `You are an expert translator and grammarian.
+You must return your response as a JSON object matching this schema:
+{
+  "translatedText": "string - The final translated text in the target language.",
+  "corrections": [
+    {
+      "original": "string - The incorrect word or segment from the source text.",
+      "corrected": "string - The corrected word or segment in the target language context, or corrected spelling in source.",
+      "explanation": "string - Explanation in Portuguese of why this was corrected."
+    }
+  ]
+}`;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${apiKey}`,
+  };
+
+  if (provider === 'openrouter') {
+    headers['HTTP-Referer'] = 'https://github.com/dgsolutionweb/gemini3.5';
+    headers['X-Title'] = 'Tradutor macOS';
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: modelName || (provider === 'openai' ? 'gpt-4o-mini' : 'google/gemini-flash-1.5'),
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt }
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.1
+      })
+    });
+
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      const errMsg = errBody?.error?.message || `HTTP error! status: ${response.status}`;
+      throw new Error(errMsg);
+    }
+
+    const data = await response.json();
+    const rawText = data.choices?.[0]?.message?.content;
+
+    if (!rawText) {
+      throw new Error(`No response content received from ${provider === 'openai' ? 'OpenAI' : 'OpenRouter'} API`);
+    }
+
+    const parsedResult: TranslationResult = JSON.parse(rawText.trim());
+    return parsedResult;
+  } catch (error) {
+    console.error(`${provider} translation error:`, error);
+    throw error;
+  }
+}
+
 // Main translation entry point
 export async function translateText(
   text: string,
   sourceLang: 'pt' | 'en',
   targetLang: 'pt' | 'en',
-  apiMode: 'gemini' | 'free',
+  apiMode: 'gemini' | 'openai' | 'openrouter' | 'free',
   apiKey: string,
   modelName: string = 'gemini-1.5-flash'
 ): Promise<TranslationResult> {
@@ -188,6 +275,10 @@ export async function translateText(
 
   if (apiMode === 'gemini' && apiKey) {
     return translateWithGemini(trimmed, sourceLang, apiKey, modelName);
+  } else if (apiMode === 'openai' && apiKey) {
+    return translateWithOpenAI(trimmed, sourceLang, apiKey, modelName, 'openai');
+  } else if (apiMode === 'openrouter' && apiKey) {
+    return translateWithOpenAI(trimmed, sourceLang, apiKey, modelName, 'openrouter');
   } else {
     return translateWithMyMemory(trimmed, sourceLang, targetLang);
   }

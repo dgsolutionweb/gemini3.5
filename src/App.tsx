@@ -18,12 +18,17 @@ import { translateText, Correction } from "./services/translationService";
 
 function App() {
   // --- Persisted States via localStorage ---
-  const [apiMode, setApiMode] = useState<'gemini' | 'free'>(() => {
-    return (localStorage.getItem('tr_api_mode') as 'gemini' | 'free') || 'free';
+  const [apiMode, setApiMode] = useState<'gemini' | 'openai' | 'openrouter' | 'free'>(() => {
+    return (localStorage.getItem('tr_api_mode') as 'gemini' | 'openai' | 'openrouter' | 'free') || 'free';
   });
-  const [apiKey, setApiKey] = useState(() => {
-    return localStorage.getItem('tr_api_key') || '';
-  });
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('tr_gemini_key') || '');
+  const [geminiModel, setGeminiModel] = useState(() => localStorage.getItem('tr_gemini_model') || 'gemini-1.5-flash');
+  const [openaiKey, setOpenaiKey] = useState(() => localStorage.getItem('tr_openai_key') || '');
+  const [openaiModel, setOpenaiModel] = useState(() => localStorage.getItem('tr_openai_model') || 'gpt-4o-mini');
+  const [openrouterKey, setOpenrouterKey] = useState(() => localStorage.getItem('tr_openrouter_key') || '');
+  const [openrouterModel, setOpenrouterModel] = useState(() => localStorage.getItem('tr_openrouter_model') || 'google/gemini-flash-1.5');
+  const [startupRun, setStartupRun] = useState<boolean>(false);
+
   const [autoTranslate, setAutoTranslate] = useState<boolean>(() => {
     const val = localStorage.getItem('tr_auto_translate');
     return val !== null ? val === 'true' : true;
@@ -48,6 +53,26 @@ function App() {
   const [globalShortcut, setGlobalShortcut] = useState<string>(() => {
     return localStorage.getItem('tr_global_shortcut') || 'CommandOrControl+Shift+T';
   });
+
+  const getActiveKeyAndModel = useCallback((mode: typeof apiMode) => {
+    if (mode === 'gemini') return { key: geminiKey, model: geminiModel };
+    if (mode === 'openai') return { key: openaiKey, model: openaiModel };
+    if (mode === 'openrouter') return { key: openrouterKey, model: openrouterModel };
+    return { key: '', model: '' };
+  }, [geminiKey, geminiModel, openaiKey, openaiModel, openrouterKey, openrouterModel]);
+
+  const activeInfo = getActiveKeyAndModel(apiMode);
+
+  // Load autostart setting from OS on mount
+  useEffect(() => {
+    invoke('plugin:autostart|is_enabled')
+      .then((enabled) => {
+        setStartupRun(!!enabled);
+      })
+      .catch((err) => {
+        console.error("Erro ao verificar autostart:", err);
+      });
+  }, []);
 
   // --- UI States ---
   const [sourceText, setSourceText] = useState("");
@@ -131,8 +156,10 @@ function App() {
     setIsLoading(true);
     setError(null);
 
+    const { key, model } = getActiveKeyAndModel(apiMode);
+
     try {
-      const result = await translateText(query, sLang, tLang, apiMode, apiKey);
+      const result = await translateText(query, sLang, tLang, apiMode, key, model);
       setTranslatedText(result.translatedText);
       setCorrections(result.corrections);
 
@@ -148,7 +175,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [apiMode, apiKey]);
+  }, [apiMode, getActiveKeyAndModel]);
 
   // Handle input change and triggers
   useEffect(() => {
@@ -241,7 +268,8 @@ function App() {
         if (!autoTranslate) {
           setIsLoading(true);
           try {
-            const result = await translateText(recognizedText, newSourceLang, newTargetLang, apiMode, apiKey);
+            const { key, model } = getActiveKeyAndModel(apiMode);
+            const result = await translateText(recognizedText, newSourceLang, newTargetLang, apiMode, key, model);
             setTranslatedText(result.translatedText);
             setCorrections(result.corrections);
             // Save to history
@@ -320,32 +348,72 @@ function App() {
     }
   };
 
-  const handleSaveSettings = (newSettings: {
-    apiMode: 'gemini' | 'free';
-    apiKey: string;
+  const handleSaveSettings = async (newSettings: {
+    apiMode: 'gemini' | 'openai' | 'openrouter' | 'free';
+    geminiKey: string;
+    geminiModel: string;
+    openaiKey: string;
+    openaiModel: string;
+    openrouterKey: string;
+    openrouterModel: string;
     autoTranslate: boolean;
     ttsVoice: string;
     ttsSpeed: number;
     globalShortcut: string;
+    startupRun: boolean;
   }) => {
     setApiMode(newSettings.apiMode);
-    setApiKey(newSettings.apiKey);
+    setGeminiKey(newSettings.geminiKey);
+    setGeminiModel(newSettings.geminiModel);
+    setOpenaiKey(newSettings.openaiKey);
+    setOpenaiModel(newSettings.openaiModel);
+    setOpenrouterKey(newSettings.openrouterKey);
+    setOpenrouterModel(newSettings.openrouterModel);
     setAutoTranslate(newSettings.autoTranslate);
     setTtsVoice(newSettings.ttsVoice);
     setTtsSpeed(newSettings.ttsSpeed);
     setGlobalShortcut(newSettings.globalShortcut);
 
     localStorage.setItem('tr_api_mode', newSettings.apiMode);
-    localStorage.setItem('tr_api_key', newSettings.apiKey);
+    localStorage.setItem('tr_gemini_key', newSettings.geminiKey);
+    localStorage.setItem('tr_gemini_model', newSettings.geminiModel);
+    localStorage.setItem('tr_openai_key', newSettings.openaiKey);
+    localStorage.setItem('tr_openai_model', newSettings.openaiModel);
+    localStorage.setItem('tr_openrouter_key', newSettings.openrouterKey);
+    localStorage.setItem('tr_openrouter_model', newSettings.openrouterModel);
     localStorage.setItem('tr_auto_translate', String(newSettings.autoTranslate));
     localStorage.setItem('tr_tts_voice', newSettings.ttsVoice);
     localStorage.setItem('tr_tts_speed', String(newSettings.ttsSpeed));
     localStorage.setItem('tr_global_shortcut', newSettings.globalShortcut);
 
+    // Sync autostart plugin with OS
+    if (newSettings.startupRun !== startupRun) {
+      try {
+        const isEnabled = await invoke<boolean>('plugin:autostart|is_enabled');
+        if (newSettings.startupRun && !isEnabled) {
+          await invoke('plugin:autostart|enable');
+        } else if (!newSettings.startupRun && isEnabled) {
+          await invoke('plugin:autostart|disable');
+        }
+        setStartupRun(newSettings.startupRun);
+      } catch (err) {
+        console.error("Falha ao configurar autostart:", err);
+      }
+    }
+
     // Force clear corrections and trigger translation with new settings if content exists
     if (sourceText.trim()) {
       setCorrections([]);
-      translateText(sourceText.trim(), sourceLang, targetLang, newSettings.apiMode, newSettings.apiKey)
+      const activeKey = newSettings.apiMode === 'gemini' ? newSettings.geminiKey
+        : newSettings.apiMode === 'openai' ? newSettings.openaiKey
+        : newSettings.apiMode === 'openrouter' ? newSettings.openrouterKey
+        : '';
+      const activeModel = newSettings.apiMode === 'gemini' ? newSettings.geminiModel
+        : newSettings.apiMode === 'openai' ? newSettings.openaiModel
+        : newSettings.apiMode === 'openrouter' ? newSettings.openrouterModel
+        : '';
+
+      translateText(sourceText.trim(), sourceLang, targetLang, newSettings.apiMode, activeKey, activeModel)
         .then(result => {
           setTranslatedText(result.translatedText);
           setCorrections(result.corrections);
@@ -416,7 +484,7 @@ function App() {
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         apiMode={apiMode}
-        apiKey={apiKey}
+        apiKey={activeInfo.key}
       />
 
       {/* Main Translation View */}
@@ -595,7 +663,7 @@ function App() {
           <CorrectionPanel
             corrections={corrections}
             apiMode={apiMode}
-            apiKey={apiKey}
+            apiKey={activeInfo.key}
           />
         </div>
       </main>
@@ -605,11 +673,17 @@ function App() {
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         apiMode={apiMode}
-        apiKey={apiKey}
+        geminiKey={geminiKey}
+        geminiModel={geminiModel}
+        openaiKey={openaiKey}
+        openaiModel={openaiModel}
+        openrouterKey={openrouterKey}
+        openrouterModel={openrouterModel}
         autoTranslate={autoTranslate}
         ttsVoice={ttsVoice}
         ttsSpeed={ttsSpeed}
         globalShortcut={globalShortcut}
+        startupRun={startupRun}
         onSave={handleSaveSettings}
       />
     </div>

@@ -4,19 +4,31 @@ import { X, Key, HelpCircle } from 'lucide-react';
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  apiMode: 'gemini' | 'free';
-  apiKey: string;
+  apiMode: 'gemini' | 'openai' | 'openrouter' | 'free';
+  geminiKey: string;
+  geminiModel: string;
+  openaiKey: string;
+  openaiModel: string;
+  openrouterKey: string;
+  openrouterModel: string;
   autoTranslate: boolean;
   ttsVoice: string;
   ttsSpeed: number;
   globalShortcut: string;
+  startupRun: boolean;
   onSave: (settings: {
-    apiMode: 'gemini' | 'free';
-    apiKey: string;
+    apiMode: 'gemini' | 'openai' | 'openrouter' | 'free';
+    geminiKey: string;
+    geminiModel: string;
+    openaiKey: string;
+    openaiModel: string;
+    openrouterKey: string;
+    openrouterModel: string;
     autoTranslate: boolean;
     ttsVoice: string;
     ttsSpeed: number;
     globalShortcut: string;
+    startupRun: boolean;
   }) => void;
 }
 
@@ -24,19 +36,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   apiMode: initialApiMode,
-  apiKey: initialApiKey,
+  geminiKey: initialGeminiKey,
+  geminiModel: initialGeminiModel,
+  openaiKey: initialOpenaiKey,
+  openaiModel: initialOpenaiModel,
+  openrouterKey: initialOpenrouterKey,
+  openrouterModel: initialOpenrouterModel,
   autoTranslate: initialAutoTranslate,
   ttsVoice: initialTtsVoice,
   ttsSpeed: initialTtsSpeed,
   globalShortcut: initialGlobalShortcut,
+  startupRun: initialStartupRun,
   onSave
 }) => {
-  const [apiMode, setApiMode] = useState<'gemini' | 'free'>(initialApiMode);
-  const [apiKey, setApiKey] = useState(initialApiKey);
+  const [apiMode, setApiMode] = useState<'gemini' | 'openai' | 'openrouter' | 'free'>(initialApiMode);
+  const [geminiKey, setGeminiKey] = useState(initialGeminiKey);
+  const [geminiModel, setGeminiModel] = useState(initialGeminiModel);
+  const [openaiKey, setOpenaiKey] = useState(initialOpenaiKey);
+  const [openaiModel, setOpenaiModel] = useState(initialOpenaiModel);
+  const [openrouterKey, setOpenrouterKey] = useState(initialOpenrouterKey);
+  const [openrouterModel, setOpenrouterModel] = useState(initialOpenrouterModel);
   const [autoTranslate, setAutoTranslate] = useState(initialAutoTranslate);
   const [ttsVoice, setTtsVoice] = useState(initialTtsVoice);
   const [ttsSpeed, setTtsSpeed] = useState(initialTtsSpeed);
   const [globalShortcut, setGlobalShortcut] = useState(initialGlobalShortcut);
+  const [startupRun, setStartupRun] = useState(initialStartupRun);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   useEffect(() => {
@@ -56,11 +80,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleSave = () => {
     onSave({
       apiMode,
-      apiKey,
+      geminiKey,
+      geminiModel,
+      openaiKey,
+      openaiModel,
+      openrouterKey,
+      openrouterModel,
       autoTranslate,
       ttsVoice,
       ttsSpeed,
-      globalShortcut
+      globalShortcut,
+      startupRun
     });
     onClose();
   };
@@ -85,33 +115,104 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 id="api-mode-select"
                 className="form-control"
                 value={apiMode}
-                onChange={(e) => setApiMode(e.target.value as 'gemini' | 'free')}
+                onChange={(e) => setApiMode(e.target.value as 'gemini' | 'openai' | 'openrouter' | 'free')}
               >
                 <option value="gemini">Gemini AI (Recomendado - Completo)</option>
+                <option value="openai">OpenAI (ChatGPT)</option>
+                <option value="openrouter">OpenRouter (Claude, LLaMA, etc.)</option>
                 <option value="free">MyMemory (Básico - Sem correções)</option>
               </select>
             </div>
 
             {apiMode === 'gemini' && (
               <div className="form-group" style={{ marginTop: '8px' }}>
-                <label htmlFor="api-key-input" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <label htmlFor="gemini-key-input" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Key size={14} /> Chave API Gemini
                 </label>
                 <input
-                  id="api-key-input"
+                  id="gemini-key-input"
                   type="password"
                   className="form-control"
                   placeholder="Cole sua chave API do Gemini aqui..."
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                />
+                <label htmlFor="gemini-model-select" style={{ display: 'block', marginTop: '8px' }}>Modelo</label>
+                <select
+                  id="gemini-model-select"
+                  className="form-control"
+                  value={geminiModel}
+                  onChange={(e) => setGeminiModel(e.target.value)}
+                >
+                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Rápido)</option>
+                  <option value="gemini-1.5-pro">Gemini 1.5 Pro (Mais Inteligente)</option>
+                </select>
+                <div className="settings-help-box" style={{ marginTop: '8px' }}>
+                  <HelpCircle size={14} style={{ inlineSize: '14px', float: 'left', marginRight: '6px' }} />
+                  <span>
+                    Obtenha sua chave de API do Gemini gratuitamente em{' '}
+                    <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer">
+                      Google AI Studio
+                    </a>.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {apiMode === 'openai' && (
+              <div className="form-group" style={{ marginTop: '8px' }}>
+                <label htmlFor="openai-key-input" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Key size={14} /> Chave API OpenAI
+                </label>
+                <input
+                  id="openai-key-input"
+                  type="password"
+                  className="form-control"
+                  placeholder="Cole sua chave API da OpenAI aqui..."
+                  value={openaiKey}
+                  onChange={(e) => setOpenaiKey(e.target.value)}
+                />
+                <label htmlFor="openai-model-select" style={{ display: 'block', marginTop: '8px' }}>Modelo</label>
+                <select
+                  id="openai-model-select"
+                  className="form-control"
+                  value={openaiModel}
+                  onChange={(e) => setOpenaiModel(e.target.value)}
+                >
+                  <option value="gpt-4o-mini">gpt-4o-mini (Rápido e Barato)</option>
+                  <option value="gpt-4o">gpt-4o (Completo)</option>
+                </select>
+              </div>
+            )}
+
+            {apiMode === 'openrouter' && (
+              <div className="form-group" style={{ marginTop: '8px' }}>
+                <label htmlFor="openrouter-key-input" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Key size={14} /> Chave API OpenRouter
+                </label>
+                <input
+                  id="openrouter-key-input"
+                  type="password"
+                  className="form-control"
+                  placeholder="Cole sua chave API do OpenRouter aqui..."
+                  value={openrouterKey}
+                  onChange={(e) => setOpenrouterKey(e.target.value)}
+                />
+                <label htmlFor="openrouter-model-input" style={{ display: 'block', marginTop: '8px' }}>Modelo (ID do OpenRouter)</label>
+                <input
+                  id="openrouter-model-input"
+                  type="text"
+                  className="form-control"
+                  placeholder="Ex: google/gemini-flash-1.5 ou anthropic/claude-3.5-sonnet"
+                  value={openrouterModel}
+                  onChange={(e) => setOpenrouterModel(e.target.value)}
                 />
                 <div className="settings-help-box" style={{ marginTop: '8px' }}>
                   <HelpCircle size={14} style={{ inlineSize: '14px', float: 'left', marginRight: '6px' }} />
                   <span>
-                    A tradução inteligente com correções ortográficas e gramaticais detalhadas utiliza a inteligência artificial do Gemini. 
-                    Obtenha sua chave de API gratuitamente em{' '}
-                    <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer">
-                      Google AI Studio
+                    Obtenha sua chave e confira a lista de modelos suportados em{' '}
+                    <a href="https://openrouter.ai/" target="_blank" rel="noreferrer">
+                      OpenRouter.ai
                     </a>.
                   </span>
                 </div>
@@ -130,6 +231,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onChange={(e) => setAutoTranslate(e.target.checked)}
                 />
                 <span>Traduzir automaticamente ao digitar (Debounce 500ms)</span>
+              </label>
+            </div>
+
+            <div className="form-group" style={{ marginTop: '8px' }}>
+              <label className="form-checkbox-group">
+                <input
+                  type="checkbox"
+                  checked={startupRun}
+                  onChange={(e) => setStartupRun(e.target.checked)}
+                />
+                <span>Iniciar o aplicativo automaticamente com o sistema</span>
               </label>
             </div>
           </div>

@@ -74,11 +74,7 @@ async fn capture_and_ocr(app: AppHandle) -> Result<String, String> {
     // Show window back and focus it
     let _ = window.show();
     let _ = window.set_focus();
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::ActivationPolicy;
-        app.set_activation_policy(ActivationPolicy::Regular).ok();
-    }
+    
     
     // Check if the file was created (screencapture -i creates the file if selection is successful)
     if !temp_image_path.exists() || !capture_status.success() {
@@ -118,6 +114,7 @@ async fn capture_and_ocr(app: AppHandle) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_global_shortcut::Builder::new()
             .with_handler(|app, _shortcut, event| {
                 if event.state() == ShortcutState::Pressed {
@@ -130,11 +127,6 @@ pub fn run() {
                         } else {
                             let _ = window.show();
                             let _ = window.set_focus();
-                            #[cfg(target_os = "macos")]
-                            {
-                                use tauri::ActivationPolicy;
-                                app.set_activation_policy(ActivationPolicy::Regular).ok();
-                            }
                         }
                     }
                 }
@@ -142,6 +134,38 @@ pub fn run() {
             .build()
         )
         .setup(|app| {
+            // Set macOS activation policy to Accessory (hides from Dock/App Switcher)
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Build Tray Icon with Context Menu
+            let quit_i = tauri::menu::MenuItem::with_id(app, "quit", "Sair do Tradutor", true, None::<&str>)?;
+            let menu = tauri::menu::Menu::with_items(app, &[&quit_i])?;
+
+            let _tray = tauri::tray::TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "quit" {
+                        app.exit(0);
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let is_visible = window.is_visible().unwrap_or(false);
+                            if is_visible {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -149,6 +173,12 @@ pub fn run() {
                 }
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             register_global_shortcut,

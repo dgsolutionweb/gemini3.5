@@ -4,7 +4,7 @@ import { Correction } from '../services/translationService';
 
 interface CorrectionPanelProps {
   corrections: Correction[];
-  apiMode: 'gemini' | 'free';
+  apiMode: 'gemini' | 'openai' | 'openrouter' | 'free';
   apiKey: string;
 }
 
@@ -13,7 +13,7 @@ export const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
   apiMode,
   apiKey
 }) => {
-  const isGeminiMode = apiMode === 'gemini' && apiKey.trim() !== '';
+  const isAiMode = (apiMode === 'gemini' || apiMode === 'openai' || apiMode === 'openrouter') && apiKey.trim() !== '';
 
   return (
     <div className="corrections-panel">
@@ -43,7 +43,7 @@ export const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
           ))
         ) : (
           <div className="no-corrections-msg">
-            {!isGeminiMode ? (
+            {!isAiMode ? (
               <>
                 <AlertCircle size={24} style={{ color: 'var(--warning-color)' }} />
                 <div>
@@ -51,8 +51,8 @@ export const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
                     Modo Grátis Limitado
                   </p>
                   <p>
-                    As correções ortográficas inteligentes detalhadas requerem o **Gemini AI**.
-                    Ative-o nas Configurações no canto inferior esquerdo.
+                    As correções ortográficas inteligentes detalhadas requerem uma **IA ativada (Gemini, OpenAI ou OpenRouter)**.
+                    Ative nas Configurações no canto inferior esquerdo.
                   </p>
                 </div>
               </>

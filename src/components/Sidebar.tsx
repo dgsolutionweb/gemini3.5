@@ -19,7 +19,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  apiMode: 'gemini' | 'free';
+  apiMode: 'gemini' | 'openai' | 'openrouter' | 'free';
   apiKey: string;
 }
 
@@ -47,7 +47,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const isApiConfigured = apiMode === 'free' || (apiMode === 'gemini' && apiKey.trim() !== '');
+  const isApiConfigured = apiMode === 'free' || (['gemini', 'openai', 'openrouter'].includes(apiMode) && apiKey.trim() !== '');
+
+  const getApiLabel = () => {
+    switch (apiMode) {
+      case 'gemini': return 'Gemini AI';
+      case 'openai': return 'OpenAI';
+      case 'openrouter': return 'OpenRouter';
+      default: return 'Grátis (Básico)';
+    }
+  };
+
+  const getDotColor = () => {
+    if (apiMode === 'free') return 'green';
+    return apiKey ? 'green' : 'orange';
+  };
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -123,9 +137,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       <div className="sidebar-footer">
         <div className="api-indicator" title={isApiConfigured ? "Serviço de Tradução Ativo" : "Requer Configuração"}>
-          <div className={`api-dot ${apiMode === 'gemini' ? (apiKey ? 'green' : 'orange') : 'green'}`}></div>
+          <div className={`api-dot ${getDotColor()}`}></div>
           <span style={{ fontSize: '11px', textTransform: 'capitalize' }}>
-            {apiMode === 'gemini' ? 'Gemini AI' : 'Grátis (Básico)'}
+            {getApiLabel()}
           </span>
         </div>
 
