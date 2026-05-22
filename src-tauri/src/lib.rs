@@ -1,9 +1,25 @@
+use serde::Serialize;
 use tauri::{AppHandle, Manager, Theme};
-use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use std::process::Command;
 use std::fs;
 use std::env;
+use std::path::Path;
+use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+use rxing::Reader;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CodeInfo {
+    pub data: String,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CapturedData {
+    pub text: String,
+    pub qr_codes: Vec<CodeInfo>,
+    pub barcodes: Vec<CodeInfo>,
+}
 
 #[tauri::command]
 fn register_global_shortcut(app: AppHandle, shortcut_str: String) -> Result<(), String> {
@@ -12,7 +28,6 @@ fn register_global_shortcut(app: AppHandle, shortcut_str: String) -> Result<(), 
     
     let global_shortcut = app.global_shortcut();
     
-    // Register the shortcut
     global_shortcut.register(shortcut)
         .map_err(|e| format!("Falha ao registrar atalho: {}", e))?;
     
@@ -52,84 +67,214 @@ extern "C" {
     fn CGRequestScreenCaptureAccess() -> bool;
 }
 
-#[tauri::command]
-async fn capture_and_ocr(app: AppHandle) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        unsafe {
-            // Request permission (triggers the native dialog if not already shown)
-            CGRequestScreenCaptureAccess();
-        }
+#[cfg(target_os = "macos")]
+fn capture_screen_macos(temp_image_str: &str) -> Result<(), String> {
+    unsafe {
+        CGRequestScreenCaptureAccess();
     }
 
-    let window = app.get_webview_window("main")
-        .ok_or_else(|| "Janela principal não encontrada".to_string())?;
-    
-    // Hide the window so it doesn't block the screen
-    let _ = window.hide();
-    
-    // Wait a brief moment to let window disappear
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    
-    // Create a temporary path
-    let temp_dir = env::temp_dir();
-    let temp_image_path = temp_dir.join("tauri_translator_capture.png");
-    let temp_image_str = temp_image_path.to_string_lossy().to_string();
-    
-    // Run macOS screencapture interactive command: screencapture -i <file>
     let capture_status = Command::new("screencapture")
-        .args(&["-i", &temp_image_str])
+        .args(&["-i", temp_image_str])
         .status()
-        .map_err(|e| {
-            let _ = window.show();
-            let _ = window.set_focus();
-            format!("Erro ao executar screencapture: {}", e)
-        })?;
-    
-    // Show window back and focus it
-    let _ = window.show();
-    let _ = window.set_focus();
-    
-    // Check if the file was created (screencapture -i creates the file if selection is successful)
-    if !temp_image_path.exists() || !capture_status.success() {
-        #[cfg(target_os = "macos")]
-        {
-            unsafe {
-                if !CGPreflightScreenCaptureAccess() {
-                    return Err("Permissão de Gravação de Tela necessária. Por favor, ative o acesso do LingoSnap em 'Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela' e tente novamente.".to_string());
-                }
+        .map_err(|e| format!("Erro ao executar screencapture: {}", e))?;
+
+    if !capture_status.success() || !Path::new(temp_image_str).exists() {
+        unsafe {
+            if !CGPreflightScreenCaptureAccess() {
+                return Err("Permissão de Gravação de Tela necessária. Por favor, ative o acesso do LingoSnap em 'Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela' e tente novamente.".to_string());
             }
         }
         return Err("Captura cancelada ou falhou".to_string());
     }
-    
-    let temp_swift_path = temp_dir.join("tauri_translator_ocr.swift");
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn capture_screen_windows(temp_image_str: &str) -> Result<(), String> {
+    let temp_dir = env::temp_dir();
+    let ps_path = temp_dir.join("lingosnap_capture.ps1");
+    let ps_code = include_str!("capture_windows.ps1");
+    fs::write(&ps_path, ps_code)
+        .map_err(|e| format!("Erro ao escrever script de captura: {}", e))?;
+
+    let output = Command::new("powershell")
+        .args(&[
+            "-ExecutionPolicy", "Bypass",
+            "-File", &ps_path.to_string_lossy().to_string(),
+            temp_image_str,
+        ])
+        .output()
+        .map_err(|e| format!("Erro ao executar captura de tela: {}", e))?;
+
+    let _ = fs::remove_file(&ps_path);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if stdout != "OK" || !Path::new(temp_image_str).exists() {
+        return Err("Captura cancelada ou falhou".to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn run_ocr_macos(temp_image_str: &str, temp_swift_path: &Path) -> Result<String, String> {
     let swift_code = include_str!("ocr.swift");
-    fs::write(&temp_swift_path, swift_code)
+    fs::write(temp_swift_path, swift_code)
         .map_err(|e| format!("Erro ao escrever ocr.swift temporário: {}", e))?;
-    
-    // Run the swift command: swift /path/to/ocr.swift /path/to/image.png
+
     let ocr_output = Command::new("swift")
-        .args(&[temp_swift_path.to_string_lossy().to_string(), temp_image_str.clone()])
+        .args(&[
+            temp_swift_path.to_string_lossy().to_string(),
+            temp_image_str.to_string(),
+        ])
         .output()
         .map_err(|e| format!("Erro ao executar script Swift OCR: {}", e))?;
-    
-    // Clean up temporary files
-    let _ = fs::remove_file(temp_image_path);
+
     let _ = fs::remove_file(temp_swift_path);
-    
+
     if !ocr_output.status.success() {
         let err_msg = String::from_utf8_lossy(&ocr_output.stderr).trim().to_string();
         return Err(format!("Erro no OCR Swift: {}", err_msg));
     }
-    
+
     let recognized_text = String::from_utf8_lossy(&ocr_output.stdout).trim().to_string();
-    
-    if recognized_text.is_empty() {
-        return Err("Nenhum texto reconhecido na imagem.".to_string());
-    }
-    
     Ok(recognized_text)
+}
+
+#[cfg(target_os = "windows")]
+fn run_ocr_windows(temp_image_str: &str) -> Result<String, String> {
+    let temp_dir = env::temp_dir();
+    let ps_path = temp_dir.join("lingosnap_ocr.ps1");
+    let ps_code = include_str!("ocr_windows.ps1");
+    fs::write(&ps_path, ps_code)
+        .map_err(|e| format!("Erro ao escrever script OCR: {}", e))?;
+
+    let output = Command::new("powershell")
+        .args(&[
+            "-ExecutionPolicy", "Bypass",
+            "-File", &ps_path.to_string_lossy().to_string(),
+            temp_image_str,
+        ])
+        .output()
+        .map_err(|e| format!("Erro ao executar OCR Windows: {}", e))?;
+
+    let _ = fs::remove_file(&ps_path);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if !output.status.success() {
+        if stdout.starts_with("ERROR:") {
+            return Err(stdout[6..].to_string());
+        }
+        return Err(format!("Falha no OCR do Windows: {}", stdout));
+    }
+
+    Ok(stdout)
+}
+
+fn detect_codes_in_image(img_path: &str) -> (Vec<CodeInfo>, Vec<CodeInfo>) {
+    let img = match image::open(img_path) {
+        Ok(img) => img,
+        Err(_) => return (vec![], vec![]),
+    };
+
+    let luma = img.to_luma8();
+    let (w, h) = luma.dimensions();
+    let raw = luma.into_raw();
+
+    let source = rxing::Luma8LuminanceSource::new(raw, w, h);
+    let mut bitmap = rxing::BinaryBitmap::new(rxing::common::HybridBinarizer::new(source));
+
+    let mut reader = rxing::MultiFormatReader::default();
+
+    let mut qr_codes = Vec::new();
+    let mut barcodes = Vec::new();
+
+    if let Ok(result) = reader.decode(&mut bitmap) {
+        let data = result.getText().to_string();
+        let format_val = result.getBarcodeFormat();
+        let format_str = format!("{:?}", format_val);
+
+        let info = CodeInfo {
+            data,
+            format: format_str,
+        };
+
+        match format_val {
+            rxing::BarcodeFormat::QR_CODE => qr_codes.push(info),
+            _ => barcodes.push(info),
+        }
+    }
+
+    (qr_codes, barcodes)
+}
+
+#[tauri::command]
+async fn capture_and_ocr(app: AppHandle) -> Result<CapturedData, String> {
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| "Janela principal não encontrada".to_string())?;
+
+    let _ = window.hide();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+
+    let temp_dir = env::temp_dir();
+    let temp_image_path = temp_dir.join("tauri_translator_capture.png");
+    let temp_image_str = temp_image_path.to_string_lossy().to_string();
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = capture_screen_macos(&temp_image_str) {
+            let _ = window.show();
+            let _ = window.set_focus();
+            return Err(e);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Err(e) = capture_screen_windows(&temp_image_str) {
+            let _ = window.show();
+            let _ = window.set_focus();
+            return Err(e);
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Err("Sistema operacional não suportado para captura de tela".to_string());
+    }
+
+    let _ = window.show();
+    let _ = window.set_focus();
+
+    if !temp_image_path.exists() {
+        return Err("Captura cancelada ou falhou".to_string());
+    }
+
+    let temp_swift_path = temp_dir.join("tauri_translator_ocr.swift");
+
+    #[cfg(target_os = "macos")]
+    let ocr_text = run_ocr_macos(&temp_image_str, &temp_swift_path).unwrap_or_default();
+
+    #[cfg(target_os = "windows")]
+    let ocr_text = run_ocr_windows(&temp_image_str).unwrap_or_default();
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let ocr_text = String::new();
+
+    let (qr_codes, barcodes) = detect_codes_in_image(&temp_image_str);
+
+    let _ = fs::remove_file(&temp_image_path);
+
+    Ok(CapturedData {
+        text: ocr_text,
+        qr_codes,
+        barcodes,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -156,11 +301,9 @@ pub fn run() {
             .build()
         )
         .setup(|app| {
-            // Set macOS activation policy to Accessory (hides from Dock/App Switcher)
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Build Tray Icon with Context Menu
             let quit_i = tauri::menu::MenuItem::with_id(app, "quit", "Sair do Tradutor", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&quit_i])?;
 
@@ -211,4 +354,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

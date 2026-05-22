@@ -104,6 +104,19 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+interface CodeInfo {
+  data: string;
+  format: string;
+}
+
+interface CapturedData {
+  text: string;
+  qr_codes: CodeInfo[];
+  barcodes: CodeInfo[];
+}
+
+const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
   
   // Feedback states for copy button
   const [copiedSource, setCopiedSource] = useState(false);
@@ -274,31 +287,35 @@ function App() {
   const handleScreenCaptureOCR = async () => {
     setIsLoading(true);
     setError(null);
+    setDetectedCodes(null);
     try {
-      const recognizedText = await invoke<string>("capture_and_ocr");
-      if (recognizedText) {
-        setSourceText(recognizedText);
+      const result = await invoke<CapturedData>("capture_and_ocr");
+      const allCodes = [...result.qr_codes, ...result.barcodes];
+      if (allCodes.length > 0) {
+        setDetectedCodes(allCodes);
+      }
+      const textToProcess = result.text || "";
+      if (textToProcess) {
+        setSourceText(textToProcess);
         setLesson(null);
         setSelectedAnswer(null);
         
-        // Trigger translation manually if autoTranslate is off
         if (!autoTranslate) {
           setIsLoading(true);
           try {
             const { key, model } = getActiveKeyAndModel(apiMode);
-            const result = await translateText(recognizedText, sourceLang, targetLang, apiMode, key, model);
-            setTranslatedText(result.translatedText);
-            setCorrections(result.corrections);
+            const transResult = await translateText(textToProcess, sourceLang, targetLang, apiMode, key, model);
+            setTranslatedText(transResult.translatedText);
+            setCorrections(transResult.corrections);
 
-            const finalSourceLang = sourceLang === 'auto' ? (result.detectedLanguage || 'en') : sourceLang;
+            const finalSourceLang = sourceLang === 'auto' ? (transResult.detectedLanguage || 'en') : sourceLang;
             let finalTargetLang = targetLang;
             if (sourceLang === 'auto') {
               if (finalSourceLang === 'en') finalTargetLang = 'pt';
               else if (finalSourceLang === 'pt') finalTargetLang = 'en';
             }
 
-            // Save to history
-            commitToHistory(recognizedText, result.translatedText, finalSourceLang, finalTargetLang);
+            commitToHistory(textToProcess, transResult.translatedText, finalSourceLang, finalTargetLang);
           } catch (err: any) {
             setError(err?.message || "Erro na tradução do texto capturado");
           } finally {
@@ -307,7 +324,6 @@ function App() {
         }
       }
     } catch (err: any) {
-      // Don't show cancel as error
       if (err !== "Captura cancelada ou falhou") {
         setError(err?.toString() || "Erro ao capturar a tela");
       }
@@ -678,6 +694,21 @@ function App() {
                   onKeyDown={handleKeyDown}
                 />
                 <span className="character-count">{sourceText.length} caracteres</span>
+                {detectedCodes && detectedCodes.length > 0 && (
+                  <div style={{ padding: '8px', borderTop: '1px solid var(--border-color)', fontSize: '12px' }}>
+                    <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--accent-color)' }}>
+                      Códigos detectados:
+                    </div>
+                    {detectedCodes.map((code, i) => (
+                      <div key={i} style={{ display: 'flex', gap: '6px', alignItems: 'baseline', marginBottom: '2px' }}>
+                        <span style={{ background: 'var(--accent-color)', color: '#fff', borderRadius: '3px', padding: '1px 5px', fontSize: '10px', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                          {code.format.replace('_', ' ')}
+                        </span>
+                        <span style={{ wordBreak: 'break-all', color: 'var(--text-secondary)' }}>{code.data}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="pane-footer">
                 <div className="action-group">
