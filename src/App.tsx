@@ -8,15 +8,17 @@ import {
   CornerDownLeft, 
   AlertCircle,
   Menu,
-  Crop,
-  BookOpen
+  Crop
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar, HistoryItem } from "./components/Sidebar";
 import { SettingsModal } from "./components/SettingsModal";
 import { CorrectionPanel } from "./components/CorrectionPanel";
+import { RegistryPanel } from "./components/RegistryPanel";
+import { CaptureCenter, CaptureRecord } from "./components/CaptureCenter";
 import { translateText, Correction } from "./services/translationService";
-import { generateLesson, LessonResult } from "./services/lessonService";
+import { lookupBrazilianIdentifiers, LookupResult } from "./services/brDataService";
 
 const languageNames: Record<string, string> = {
   auto: "Auto-Detectar",
@@ -28,16 +30,20 @@ const languageNames: Record<string, string> = {
   it: "Italiano"
 };
 
+const isTauriRuntime = () => (
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+);
+
 function App() {
   // --- Persisted States via localStorage ---
   const [apiMode, setApiMode] = useState<'gemini' | 'openai' | 'openrouter' | 'free'>(() => {
     return (localStorage.getItem('tr_api_mode') as 'gemini' | 'openai' | 'openrouter' | 'free') || 'free';
   });
-  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('tr_gemini_key') || '');
+  const [geminiKey, setGeminiKey] = useState('');
   const [geminiModel, setGeminiModel] = useState(() => localStorage.getItem('tr_gemini_model') || 'gemini-1.5-flash');
-  const [openaiKey, setOpenaiKey] = useState(() => localStorage.getItem('tr_openai_key') || '');
+  const [openaiKey, setOpenaiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState(() => localStorage.getItem('tr_openai_model') || 'gpt-4o-mini');
-  const [openrouterKey, setOpenrouterKey] = useState(() => localStorage.getItem('tr_openrouter_key') || '');
+  const [openrouterKey, setOpenrouterKey] = useState('');
   const [openrouterModel, setOpenrouterModel] = useState(() => localStorage.getItem('tr_openrouter_model') || 'google/gemini-flash-1.5');
   const [startupRun, setStartupRun] = useState<boolean>(false);
 
@@ -65,6 +71,10 @@ function App() {
   const [globalShortcut, setGlobalShortcut] = useState<string>(() => {
     return localStorage.getItem('tr_global_shortcut') || 'CommandOrControl+Shift+T';
   });
+  const [windowOpacity, setWindowOpacity] = useState<number>(() => {
+    const val = localStorage.getItem('tr_window_opacity');
+    return val !== null ? Math.min(1, Math.max(0.45, parseFloat(val))) : 0.82;
+  });
 
   const getActiveKeyAndModel = useCallback((mode: typeof apiMode) => {
     if (mode === 'gemini') return { key: geminiKey, model: geminiModel };
@@ -75,8 +85,45 @@ function App() {
 
   const activeInfo = getActiveKeyAndModel(apiMode);
 
+  useEffect(() => {
+    const loadSecureKeys = async () => {
+      const providers = [
+        { name: 'gemini', setter: setGeminiKey, legacyKey: 'tr_gemini_key' },
+        { name: 'openai', setter: setOpenaiKey, legacyKey: 'tr_openai_key' },
+        { name: 'openrouter', setter: setOpenrouterKey, legacyKey: 'tr_openrouter_key' },
+      ];
+
+      for (const provider of providers) {
+        const legacyValue = localStorage.getItem(provider.legacyKey) || '';
+        if (!isTauriRuntime()) {
+          provider.setter(legacyValue);
+          continue;
+        }
+
+        try {
+          const saved = await invoke<string | null>('get_api_secret', { provider: provider.name });
+          if (saved) {
+            provider.setter(saved);
+            localStorage.removeItem(provider.legacyKey);
+          } else if (legacyValue) {
+            await invoke('save_api_secret', { provider: provider.name, secret: legacyValue });
+            provider.setter(legacyValue);
+            localStorage.removeItem(provider.legacyKey);
+          }
+        } catch (err) {
+          console.error(`Falha ao carregar credencial ${provider.name}:`, err);
+          provider.setter(legacyValue);
+        }
+      }
+    };
+
+    loadSecureKeys();
+  }, []);
+
   // Load autostart setting from OS on mount
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+
     invoke('plugin:autostart|is_enabled')
       .then((enabled) => {
         setStartupRun(!!enabled);
@@ -94,16 +141,22 @@ function App() {
   const [sourceLang, setSourceLang] = useState<string>("auto");
   const [targetLang, setTargetLang] = useState<string>("pt");
 
-  // --- Study Tab & Lesson States ---
-  const [activeTab, setActiveTab] = useState<'translation' | 'lesson'>('translation');
-  const [lesson, setLesson] = useState<LessonResult | null>(null);
-  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
-  const [isGeneratingLesson, setIsGeneratingLesson] = useState(false);
-  
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const [activeCaptureId, setActiveCaptureId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRegistryLoading, setIsRegistryLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [registryResults, setRegistryResults] = useState<LookupResult[]>([]);
+  const [captures, setCaptures] = useState<CaptureRecord[]>(() => {
+    const raw = localStorage.getItem('tr_captures');
+    try {
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
 
 interface CodeInfo {
   data: string;
@@ -114,6 +167,7 @@ interface CapturedData {
   text: string;
   qr_codes: CodeInfo[];
   barcodes: CodeInfo[];
+  image_data_url?: string;
 }
 
 const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
@@ -125,6 +179,7 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
   // Debounce and abort controller references
   const debounceTimerRef = useRef<any | null>(null);
   const historyTimerRef = useRef<any | null>(null);
+  const skipNextAutoTranslateRef = useRef(false);
 
   // Apply visual theme to the document element
   useEffect(() => {
@@ -138,14 +193,22 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
     }
     localStorage.setItem('tr_theme', theme);
 
-    // Call Rust to update native theme so vibrancy matches!
-    invoke("set_app_theme", { theme }).catch(err => {
-      console.error("Failed to set native theme:", err);
-    });
+    if (isTauriRuntime()) {
+      invoke("set_app_theme", { theme }).catch(err => {
+        console.error("Failed to set native theme:", err);
+      });
+    }
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--window-opacity', String(windowOpacity));
+    localStorage.setItem('tr_window_opacity', String(windowOpacity));
+  }, [windowOpacity]);
 
   // Manage global hotkey registration
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+
     const registerShortcut = async () => {
       try {
         await invoke("register_global_shortcut", { shortcutStr: globalShortcut });
@@ -173,6 +236,10 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
   useEffect(() => {
     localStorage.setItem('tr_history', JSON.stringify(history));
   }, [history]);
+
+  useEffect(() => {
+    localStorage.setItem('tr_captures', JSON.stringify(captures.slice(0, 40)));
+  }, [captures]);
 
   // --- Translation Core Logic ---
   const performTranslation = useCallback(async (textToTranslate: string, sLang: string, tLang: string) => {
@@ -207,10 +274,6 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
         commitToHistory(query, result.translatedText, finalSourceLang, finalTargetLang);
       }, 2500);
 
-      // Clear lessons when text updates
-      setLesson(null);
-      setSelectedAnswer(null);
-
     } catch (err: any) {
       console.error(err);
       setError(err?.message || "Ocorreu um erro ao realizar a tradução.");
@@ -222,6 +285,11 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
   // Handle input change and triggers
   useEffect(() => {
     if (!autoTranslate) return;
+
+    if (skipNextAutoTranslateRef.current) {
+      skipNextAutoTranslateRef.current = false;
+      return;
+    }
 
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
 
@@ -285,9 +353,15 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
   };
 
   const handleScreenCaptureOCR = async () => {
+    if (!isTauriRuntime()) {
+      setError("A captura de tela esta disponivel apenas no aplicativo desktop.");
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setDetectedCodes(null);
+    setRegistryResults([]);
     try {
       const result = await invoke<CapturedData>("capture_and_ocr");
       const allCodes = [...result.qr_codes, ...result.barcodes];
@@ -295,32 +369,55 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
         setDetectedCodes(allCodes);
       }
       const textToProcess = result.text || "";
+      const lookupText = [textToProcess, ...allCodes.map((code) => code.data)].filter(Boolean).join("\n");
+      let lookupResults: LookupResult[] = [];
+
+      if (lookupText) {
+        setIsRegistryLoading(true);
+        try {
+          lookupResults = await lookupBrazilianIdentifiers(lookupText);
+          setRegistryResults(lookupResults);
+        } catch (err) {
+          console.error("Erro ao consultar CNPJ/CEP:", err);
+        } finally {
+          setIsRegistryLoading(false);
+        }
+      }
+
       if (textToProcess) {
+        skipNextAutoTranslateRef.current = true;
         setSourceText(textToProcess);
-        setLesson(null);
-        setSelectedAnswer(null);
-        
-        if (!autoTranslate) {
-          setIsLoading(true);
-          try {
-            const { key, model } = getActiveKeyAndModel(apiMode);
-            const transResult = await translateText(textToProcess, sourceLang, targetLang, apiMode, key, model);
-            setTranslatedText(transResult.translatedText);
-            setCorrections(transResult.corrections);
+        try {
+          const { key, model } = getActiveKeyAndModel(apiMode);
+          const transResult = await translateText(textToProcess, sourceLang, targetLang, apiMode, key, model);
+          setTranslatedText(transResult.translatedText);
+          setCorrections(transResult.corrections);
 
-            const finalSourceLang = sourceLang === 'auto' ? (transResult.detectedLanguage || 'en') : sourceLang;
-            let finalTargetLang = targetLang;
-            if (sourceLang === 'auto') {
-              if (finalSourceLang === 'en') finalTargetLang = 'pt';
-              else if (finalSourceLang === 'pt') finalTargetLang = 'en';
-            }
-
-            commitToHistory(textToProcess, transResult.translatedText, finalSourceLang, finalTargetLang);
-          } catch (err: any) {
-            setError(err?.message || "Erro na tradução do texto capturado");
-          } finally {
-            setIsLoading(false);
+          const finalSourceLang = sourceLang === 'auto' ? (transResult.detectedLanguage || 'en') : sourceLang;
+          let finalTargetLang = targetLang;
+          if (sourceLang === 'auto') {
+            if (finalSourceLang === 'en') finalTargetLang = 'pt';
+            else if (finalSourceLang === 'pt') finalTargetLang = 'en';
           }
+
+          commitToHistory(textToProcess, transResult.translatedText, finalSourceLang, finalTargetLang);
+
+          const capture: CaptureRecord = {
+            id: `cap-${Date.now()}`,
+            timestamp: Date.now(),
+            sourceText: textToProcess,
+            translatedText: transResult.translatedText,
+            sourceLang: finalSourceLang,
+            targetLang: finalTargetLang,
+            imageDataUrl: result.image_data_url,
+            registryResults: lookupResults,
+            codes: allCodes,
+          };
+
+          setActiveCaptureId(capture.id);
+          setCaptures(prev => [capture, ...prev].slice(0, 40));
+        } catch (err: any) {
+          setError(err?.message || "Erro na tradução do texto capturado");
         }
       }
     } catch (err: any) {
@@ -355,8 +452,6 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
     setTargetLang(newTargetLang);
     setCorrections([]);
     setError(null);
-    setLesson(null);
-    setSelectedAnswer(null);
 
     // If auto translate is enabled, trigger translate immediately for the new text
     if (autoTranslate && tempTarget.trim()) {
@@ -364,49 +459,53 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
     }
   };
 
-  const handleGenerateLesson = async () => {
-    if (!sourceText.trim() || !translatedText.trim()) return;
-    setIsGeneratingLesson(true);
-    setSelectedAnswer(null);
-    try {
-      const { key, model } = getActiveKeyAndModel(apiMode);
-      let actualSource = sourceLang;
-      if (sourceLang === 'auto') {
-        const englishWords = /\b(the|and|of|to|is|in|that|it|he|was|for|on|are|as|with|his|they|i|at|be|this|have|from|or|one|had|by|word|but|not|what|all|were|we|when|your|can|said|there|use|an|each|which|she|do|how|their|if)\b/i;
-        actualSource = englishWords.test(sourceText) ? 'en' : 'pt';
-      }
-      const lessonResult = await generateLesson(
-        sourceText,
-        translatedText,
-        actualSource,
-        targetLang,
-        apiMode,
-        key,
-        model
-      );
-      setLesson(lessonResult);
-    } catch (err: any) {
-      console.error("Erro ao gerar lição:", err);
-    } finally {
-      setIsGeneratingLesson(false);
-    }
-  };
-
   const handleClearSource = () => {
     setSourceText("");
     setTranslatedText("");
     setCorrections([]);
+    setRegistryResults([]);
     setError(null);
     setActiveItemId(null);
+    setActiveCaptureId(null);
   };
 
   const handleSelectHistoryItem = (item: HistoryItem) => {
+    skipNextAutoTranslateRef.current = true;
     setSourceText(item.sourceText);
     setTranslatedText(item.translatedText);
     setSourceLang(item.sourceLang);
     setTargetLang(item.targetLang);
     setCorrections([]); // Clear corrections since history items represent compiled state
+    setRegistryResults([]);
     setActiveItemId(item.id);
+    setActiveCaptureId(null);
+  };
+
+  const handleSelectCapture = (capture: CaptureRecord) => {
+    skipNextAutoTranslateRef.current = true;
+    setSourceText(capture.sourceText);
+    setTranslatedText(capture.translatedText);
+    setSourceLang(capture.sourceLang);
+    setTargetLang(capture.targetLang);
+    setCorrections([]);
+    setRegistryResults(capture.registryResults);
+    setDetectedCodes(capture.codes.length > 0 ? capture.codes : null);
+    setActiveCaptureId(capture.id);
+    setActiveItemId(null);
+  };
+
+  const handleDeleteCapture = (id: string) => {
+    setCaptures(prev => prev.filter(capture => capture.id !== id));
+    if (activeCaptureId === id) {
+      setActiveCaptureId(null);
+    }
+  };
+
+  const handleClearCaptures = () => {
+    if (confirm("Deseja apagar todas as capturas salvas?")) {
+      setCaptures([]);
+      setActiveCaptureId(null);
+    }
   };
 
   const handleDeleteHistoryItem = (id: string) => {
@@ -436,33 +535,52 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
     ttsSpeed: number;
     globalShortcut: string;
     startupRun: boolean;
+    windowOpacity: number;
   }) => {
+    const finalGeminiKey = newSettings.geminiKey.trim() || geminiKey;
+    const finalOpenaiKey = newSettings.openaiKey.trim() || openaiKey;
+    const finalOpenrouterKey = newSettings.openrouterKey.trim() || openrouterKey;
+
     setApiMode(newSettings.apiMode);
-    setGeminiKey(newSettings.geminiKey);
+    setGeminiKey(finalGeminiKey);
     setGeminiModel(newSettings.geminiModel);
-    setOpenaiKey(newSettings.openaiKey);
+    setOpenaiKey(finalOpenaiKey);
     setOpenaiModel(newSettings.openaiModel);
-    setOpenrouterKey(newSettings.openrouterKey);
+    setOpenrouterKey(finalOpenrouterKey);
     setOpenrouterModel(newSettings.openrouterModel);
     setAutoTranslate(newSettings.autoTranslate);
     setTtsVoice(newSettings.ttsVoice);
     setTtsSpeed(newSettings.ttsSpeed);
     setGlobalShortcut(newSettings.globalShortcut);
+    setWindowOpacity(newSettings.windowOpacity);
 
     localStorage.setItem('tr_api_mode', newSettings.apiMode);
-    localStorage.setItem('tr_gemini_key', newSettings.geminiKey);
     localStorage.setItem('tr_gemini_model', newSettings.geminiModel);
-    localStorage.setItem('tr_openai_key', newSettings.openaiKey);
     localStorage.setItem('tr_openai_model', newSettings.openaiModel);
-    localStorage.setItem('tr_openrouter_key', newSettings.openrouterKey);
     localStorage.setItem('tr_openrouter_model', newSettings.openrouterModel);
     localStorage.setItem('tr_auto_translate', String(newSettings.autoTranslate));
     localStorage.setItem('tr_tts_voice', newSettings.ttsVoice);
     localStorage.setItem('tr_tts_speed', String(newSettings.ttsSpeed));
     localStorage.setItem('tr_global_shortcut', newSettings.globalShortcut);
+    localStorage.setItem('tr_window_opacity', String(newSettings.windowOpacity));
+    localStorage.removeItem('tr_gemini_key');
+    localStorage.removeItem('tr_openai_key');
+    localStorage.removeItem('tr_openrouter_key');
+
+    if (isTauriRuntime()) {
+      const secretWrites = [
+        newSettings.geminiKey.trim() ? invoke('save_api_secret', { provider: 'gemini', secret: newSettings.geminiKey }) : null,
+        newSettings.openaiKey.trim() ? invoke('save_api_secret', { provider: 'openai', secret: newSettings.openaiKey }) : null,
+        newSettings.openrouterKey.trim() ? invoke('save_api_secret', { provider: 'openrouter', secret: newSettings.openrouterKey }) : null,
+      ].filter(Boolean);
+
+      Promise.all(secretWrites).catch(err => {
+        setError(err?.toString() || "Nao foi possivel salvar as chaves no cofre do sistema.");
+      });
+    }
 
     // Sync autostart plugin with OS
-    if (newSettings.startupRun !== startupRun) {
+    if (isTauriRuntime() && newSettings.startupRun !== startupRun) {
       try {
         const isEnabled = await invoke<boolean>('plugin:autostart|is_enabled');
         if (newSettings.startupRun && !isEnabled) {
@@ -479,9 +597,9 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
     // Force clear corrections and trigger translation with new settings if content exists
     if (sourceText.trim()) {
       setCorrections([]);
-      const activeKey = newSettings.apiMode === 'gemini' ? newSettings.geminiKey
-        : newSettings.apiMode === 'openai' ? newSettings.openaiKey
-        : newSettings.apiMode === 'openrouter' ? newSettings.openrouterKey
+      const activeKey = newSettings.apiMode === 'gemini' ? finalGeminiKey
+        : newSettings.apiMode === 'openai' ? finalOpenaiKey
+        : newSettings.apiMode === 'openrouter' ? finalOpenrouterKey
         : '';
       const activeModel = newSettings.apiMode === 'gemini' ? newSettings.geminiModel
         : newSettings.apiMode === 'openai' ? newSettings.openaiModel
@@ -497,6 +615,20 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
           setError(err?.message || "Erro com o novo motor de tradução");
         });
     }
+  };
+
+  const handleWindowDrag = () => {
+    if (!isTauriRuntime()) return;
+    getCurrentWindow().startDragging().catch(err => {
+      console.error("Failed to start window drag:", err);
+    });
+  };
+
+  const handleRepairScreenPermission = () => {
+    if (!isTauriRuntime()) return;
+    invoke("reset_screen_recording_permission").catch(err => {
+      setError(err?.toString() || "Nao foi possivel reparar a permissao de gravacao de tela.");
+    });
   };
 
   // Clipboard copies
@@ -570,6 +702,7 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
         onDeleteItem={handleDeleteHistoryItem}
         onClearHistory={handleClearHistory}
         onOpenSettings={() => setSettingsOpen(true)}
+        onWindowDrag={handleWindowDrag}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         apiMode={apiMode}
@@ -580,7 +713,7 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
       <main className="main-view">
         {/* custom macOS style header */}
         <header className={`main-header ${sidebarCollapsed ? 'sidebar-collapsed-padding' : ''}`}>
-          <div className="header-title-bar-drag" data-tauri-drag-region></div>
+          <div className="header-title-bar-drag" onMouseDown={handleWindowDrag}></div>
           <div className="header-controls">
             <div className="header-left">
               {sidebarCollapsed && (
@@ -764,175 +897,41 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
                   Resultado
                   {isLoading && autoTranslate && <div className="spinner" style={{ borderColor: 'rgba(0,0,0,0.1)', borderTopColor: 'var(--accent-color)', width: '12px', height: '12px', borderWidth: '2px' }} />}
                 </span>
-                <div className="pane-tabs">
-                  <button 
-                    className={`pane-tab ${activeTab === 'translation' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('translation')}
-                  >
-                    Tradução
-                  </button>
-                  <button 
-                    className={`pane-tab ${activeTab === 'lesson' ? 'active' : ''}`}
-                    onClick={() => {
-                      setActiveTab('lesson');
-                      if (!lesson && sourceText.trim() && translatedText.trim()) {
-                        handleGenerateLesson();
-                      }
-                    }}
-                    disabled={!sourceText.trim() || !translatedText.trim()}
-                  >
-                    Mini-Aula IA
-                  </button>
-                </div>
               </div>
               <div className="pane-textarea-wrapper">
-                {activeTab === 'translation' ? (
-                  error ? (
-                     <div style={{ color: 'var(--error-color)', display: 'flex', gap: '8px', fontSize: '13px', padding: '8px', borderRadius: '6px', backgroundColor: 'rgba(255, 59, 48, 0.08)' }}>
-                       <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
-                       <div>{error}</div>
-                     </div>
-                  ) : (
-                     <div 
-                       className="pane-target-display" 
-                       data-placeholder="A tradução aparecerá aqui..."
-                     >
-                       {translatedText}
-                     </div>
-                  )
+                {error ? (
+                   <div style={{ color: 'var(--error-color)', display: 'flex', gap: '8px', fontSize: '13px', padding: '8px', borderRadius: '6px', backgroundColor: 'rgba(255, 59, 48, 0.08)' }}>
+                     <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                     <div>{error}</div>
+                   </div>
                 ) : (
-                  <div className="lesson-container">
-                    {isGeneratingLesson ? (
-                      <div className="lesson-empty-state">
-                        <div className="spinner" style={{ width: '24px', height: '24px', borderWidth: '3px', marginBottom: '8px' }} />
-                        <span>Gerando lição de fixação personalizada...</span>
-                      </div>
-                    ) : lesson ? (
-                      <>
-                        <div className="lesson-header" style={{ marginBottom: '12px' }}>
-                          <h3 className="lesson-title">{lesson.lessonTitle}</h3>
-                        </div>
-
-                        {/* Grammar Section */}
-                        {lesson.grammarPoints && lesson.grammarPoints.length > 0 && (
-                          <div style={{ marginBottom: '16px' }}>
-                            <div className="lesson-section-title">
-                              Gramática e Dicas
-                            </div>
-                            {lesson.grammarPoints.map((gp, i) => (
-                              <div key={i} className="lesson-card" style={{ marginBottom: '8px' }}>
-                                <div className="grammar-point-title">{gp.point}</div>
-                                <div className="grammar-point-desc">{gp.explanation}</div>
-                                <div className="lesson-example">
-                                  <strong>Exemplo:</strong> "{gp.exampleOriginal}"
-                                  <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>{gp.exampleTranslated}</div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Vocabulary Section */}
-                        {lesson.vocabulary && lesson.vocabulary.length > 0 && (
-                          <div style={{ marginBottom: '16px' }}>
-                            <div className="lesson-section-title">
-                              Vocabulário
-                            </div>
-                            <div className="vocab-list">
-                              {lesson.vocabulary.map((vocab, i) => (
-                                <div key={i} className="lesson-card" style={{ marginBottom: '4px' }}>
-                                  <div className="vocab-word">{vocab.word}</div>
-                                  <div className="vocab-meaning">{vocab.meaning}</div>
-                                  <div className="vocab-usage">"{vocab.usage}"</div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Quiz Section */}
-                        {lesson.quiz && lesson.quiz.question && (
-                          <div className="quiz-section">
-                            <div className="lesson-section-title">
-                              Quiz de Fixação
-                            </div>
-                            <div className="quiz-question">{lesson.quiz.question}</div>
-                            <div className="quiz-options">
-                              {lesson.quiz.options.map((option, idx) => {
-                                const isCorrect = idx === lesson.quiz.correctIndex;
-                                const isSelected = idx === selectedAnswer;
-                                
-                                let optionClass = "";
-                                if (selectedAnswer !== null) {
-                                  if (isCorrect) optionClass = "correct";
-                                  else if (isSelected) optionClass = "incorrect";
-                                }
-                                
-                                return (
-                                  <button
-                                    key={idx}
-                                    className={`quiz-option ${optionClass} ${selectedAnswer !== null ? 'disabled' : ''}`}
-                                    onClick={() => selectedAnswer === null && setSelectedAnswer(idx)}
-                                    disabled={selectedAnswer !== null}
-                                    style={{ width: '100%' }}
-                                  >
-                                    {option}
-                                  </button>
-                                );
-                              })}
-                            </div>
-
-                            {selectedAnswer !== null && (
-                              <div className={`quiz-feedback ${selectedAnswer === lesson.quiz.correctIndex ? 'success' : 'fail'}`}>
-                                <strong style={{ display: 'block', marginBottom: '4px' }}>
-                                  {selectedAnswer === lesson.quiz.correctIndex ? "Correto! 🎉" : "Incorreto ❌"}
-                                </strong>
-                                <span>{lesson.quiz.explanation}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="lesson-empty-state">
-                        <span>Nenhuma lição disponível. Recorte um texto e clique em Gerar Aula.</span>
-                      </div>
-                    )}
-                  </div>
+                   <div 
+                     className="pane-target-display" 
+                     data-placeholder="A tradução aparecerá aqui..."
+                   >
+                     {translatedText}
+                   </div>
                 )}
               </div>
               <div className="pane-footer">
-                {activeTab === 'translation' ? (
-                  <div className="action-group">
-                    <button 
-                      className="action-btn"
-                      onClick={() => speakText(translatedText, targetLang)}
-                      disabled={!translatedText}
-                      title="Ouvir tradução"
-                    >
-                      <Volume2 size={14} />
-                    </button>
-                    <button 
-                      className="action-btn"
-                      onClick={() => copyToClipboard(translatedText, false)}
-                      disabled={!translatedText}
-                      title="Copiar tradução"
-                    >
-                      {copiedTarget ? <Check size={14} style={{ color: 'var(--success-color)' }} /> : <Copy size={14} />}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="action-group" style={{ width: '100%', justifyContent: 'center' }}>
-                    <button 
-                      className="lesson-generate-btn"
-                      onClick={handleGenerateLesson}
-                      disabled={isGeneratingLesson || !sourceText.trim() || !translatedText.trim()}
-                    >
-                      <BookOpen size={13} />
-                      <span>{lesson ? "Recriar Lição por IA" : "Gerar Lição por IA"}</span>
-                    </button>
-                  </div>
-                )}
+                <div className="action-group">
+                  <button 
+                    className="action-btn"
+                    onClick={() => speakText(translatedText, targetLang)}
+                    disabled={!translatedText}
+                    title="Ouvir tradução"
+                  >
+                    <Volume2 size={14} />
+                  </button>
+                  <button 
+                    className="action-btn"
+                    onClick={() => copyToClipboard(translatedText, false)}
+                    disabled={!translatedText}
+                    title="Copiar tradução"
+                  >
+                    {copiedTarget ? <Check size={14} style={{ color: 'var(--success-color)' }} /> : <Copy size={14} />}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -942,6 +941,19 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
             corrections={corrections}
             apiMode={apiMode}
             apiKey={activeInfo.key}
+          />
+
+          <RegistryPanel
+            results={registryResults}
+            isLoading={isRegistryLoading}
+          />
+
+          <CaptureCenter
+            captures={captures}
+            activeCaptureId={activeCaptureId}
+            onSelect={handleSelectCapture}
+            onDelete={handleDeleteCapture}
+            onClear={handleClearCaptures}
           />
         </div>
       </main>
@@ -962,6 +974,8 @@ const [detectedCodes, setDetectedCodes] = useState<CodeInfo[] | null>(null);
         ttsSpeed={ttsSpeed}
         globalShortcut={globalShortcut}
         startupRun={startupRun}
+        windowOpacity={windowOpacity}
+        onRepairScreenPermission={handleRepairScreenPermission}
         onSave={handleSaveSettings}
       />
     </div>

@@ -27,4 +27,6 @@ serde_json = "1"
 window-vibrancy = "0.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 rxing = "0.6"
+keyring = "3"
+base64 = "0.22"
 

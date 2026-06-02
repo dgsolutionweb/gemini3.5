@@ -17,6 +17,7 @@ interface SidebarProps {
   onDeleteItem: (id: string) => void;
   onClearHistory: () => void;
   onOpenSettings: () => void;
+  onWindowDrag: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
   apiMode: 'gemini' | 'openai' | 'openrouter' | 'free';
@@ -30,6 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteItem,
   onClearHistory,
   onOpenSettings,
+  onWindowDrag,
   collapsed,
   onToggleCollapse,
   apiMode,
@@ -68,8 +70,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <div className="sidebar-header" data-tauri-drag-region>
-        <div className="drag-handle" data-tauri-drag-region></div>
+      <div className="sidebar-header">
+        <div className="drag-handle" onMouseDown={onWindowDrag}></div>
         <button 
           className="footer-btn" 
           onClick={onToggleCollapse} 

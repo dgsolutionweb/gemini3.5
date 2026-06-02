@@ -13,11 +13,15 @@ $form.Opacity = 0.05
 $form.TopMost = $true
 $form.Cursor = 'Cross'
 $form.ShowInTaskbar = $false
+$form.KeyPreview = $true
 $form.WindowState = 'Normal'
 $form.StartPosition = 'Manual'
 $form.Location = $bounds.Location
 $form.Size = $bounds.Size
-$form.BringToFront()
+$form.Add_Shown({
+    $form.BringToFront()
+    $form.Activate()
+})
 
 $startX = 0; $startY = 0; $isDown = $false
 $rect = New-Object System.Drawing.Rectangle(0,0,0,0)
@@ -61,9 +65,11 @@ $form.Add_Paint({
 [void]$form.ShowDialog()
 
 if ($captured -and $rect.Width -gt 0 -and $rect.Height -gt 0) {
+    $screenX = $bounds.X + $rect.X
+    $screenY = $bounds.Y + $rect.Y
     $bitmap = New-Object System.Drawing.Bitmap($rect.Width, $rect.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen($rect.X, $rect.Y, 0, 0, $rect.Size)
+    $graphics.CopyFromScreen($screenX, $screenY, 0, 0, $rect.Size)
     $graphics.Dispose()
     $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
     $bitmap.Dispose()

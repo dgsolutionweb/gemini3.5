@@ -4,9 +4,18 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use std::process::Command;
 use std::fs;
 use std::env;
-use std::path::Path;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 use rxing::Reader;
+use base64::{engine::general_purpose, Engine as _};
+use image::imageops::FilterType;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodeInfo {
@@ -19,7 +28,10 @@ pub struct CapturedData {
     pub text: String,
     pub qr_codes: Vec<CodeInfo>,
     pub barcodes: Vec<CodeInfo>,
+    pub image_data_url: Option<String>,
 }
+
+const KEYCHAIN_SERVICE: &str = "LingoSnap";
 
 #[tauri::command]
 fn register_global_shortcut(app: AppHandle, shortcut_str: String) -> Result<(), String> {
@@ -60,6 +72,72 @@ fn set_app_theme(app: AppHandle, theme: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn save_api_secret(provider: String, secret: String) -> Result<(), String> {
+    let account = format!("api-key-{}", provider);
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account)
+        .map_err(|e| format!("Erro ao acessar cofre de credenciais: {}", e))?;
+
+    if secret.trim().is_empty() {
+        let _ = entry.delete_credential();
+        return Ok(());
+    }
+
+    entry
+        .set_password(secret.trim())
+        .map_err(|e| format!("Erro ao salvar credencial: {}", e))
+}
+
+#[tauri::command]
+fn get_api_secret(provider: String) -> Result<Option<String>, String> {
+    let account = format!("api-key-{}", provider);
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account)
+        .map_err(|e| format!("Erro ao acessar cofre de credenciais: {}", e))?;
+
+    match entry.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Erro ao ler credencial: {}", e)),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn reset_screen_recording_permission() -> Result<(), String> {
+    if let Some(app_bundle_path) = current_app_bundle_path() {
+        let _ = Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+            .arg("-f")
+            .arg(app_bundle_path)
+            .status();
+    }
+
+    let _reset_status = Command::new("tccutil")
+        .args(["reset", "ScreenCapture", "com.douglasrodrigues.lingosnap"])
+        .status()
+        .map_err(|e| format!("Erro ao resetar permissão de gravação de tela: {}", e))?;
+
+    Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        .status()
+        .map_err(|e| format!("Erro ao abrir Ajustes do Sistema: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn current_app_bundle_path() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn reset_screen_recording_permission() -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -70,7 +148,10 @@ extern "C" {
 #[cfg(target_os = "macos")]
 fn capture_screen_macos(temp_image_str: &str) -> Result<(), String> {
     unsafe {
-        CGRequestScreenCaptureAccess();
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess();
+            return Err("Permissão de Gravação de Tela necessária. Se o LingoSnap já estiver marcado em Ajustes do Sistema, clique em Reparar permissão nas Preferências, ative novamente e reinicie o app.".to_string());
+        }
     }
 
     let capture_status = Command::new("screencapture")
@@ -98,12 +179,16 @@ fn capture_screen_windows(temp_image_str: &str) -> Result<(), String> {
     fs::write(&ps_path, ps_code)
         .map_err(|e| format!("Erro ao escrever script de captura: {}", e))?;
 
-    let output = Command::new("powershell")
+    let output = Command::new("powershell.exe")
         .args(&[
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle", "Hidden",
             "-ExecutionPolicy", "Bypass",
             "-File", &ps_path.to_string_lossy().to_string(),
             temp_image_str,
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("Erro ao executar captura de tela: {}", e))?;
 
@@ -151,12 +236,16 @@ fn run_ocr_windows(temp_image_str: &str) -> Result<String, String> {
     fs::write(&ps_path, ps_code)
         .map_err(|e| format!("Erro ao escrever script OCR: {}", e))?;
 
-    let output = Command::new("powershell")
+    let output = Command::new("powershell.exe")
         .args(&[
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle", "Hidden",
             "-ExecutionPolicy", "Bypass",
             "-File", &ps_path.to_string_lossy().to_string(),
             temp_image_str,
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("Erro ao executar OCR Windows: {}", e))?;
 
@@ -209,6 +298,15 @@ fn detect_codes_in_image(img_path: &str) -> (Vec<CodeInfo>, Vec<CodeInfo>) {
     }
 
     (qr_codes, barcodes)
+}
+
+fn create_capture_thumbnail_data_url(img_path: &str) -> Option<String> {
+    let img = image::open(img_path).ok()?;
+    let thumbnail = img.resize(420, 260, FilterType::Triangle);
+    let mut bytes = Cursor::new(Vec::new());
+    thumbnail.write_to(&mut bytes, image::ImageFormat::Png).ok()?;
+    let encoded = general_purpose::STANDARD.encode(bytes.into_inner());
+    Some(format!("data:image/png;base64,{}", encoded))
 }
 
 #[tauri::command]
@@ -267,6 +365,7 @@ async fn capture_and_ocr(app: AppHandle) -> Result<CapturedData, String> {
     let ocr_text = String::new();
 
     let (qr_codes, barcodes) = detect_codes_in_image(&temp_image_str);
+    let image_data_url = create_capture_thumbnail_data_url(&temp_image_str);
 
     let _ = fs::remove_file(&temp_image_path);
 
@@ -274,6 +373,7 @@ async fn capture_and_ocr(app: AppHandle) -> Result<CapturedData, String> {
         text: ocr_text,
         qr_codes,
         barcodes,
+        image_data_url,
     })
 }
 
@@ -349,6 +449,9 @@ pub fn run() {
             register_global_shortcut,
             unregister_global_shortcut,
             set_app_theme,
+            save_api_secret,
+            get_api_secret,
+            reset_screen_recording_permission,
             capture_and_ocr
         ])
         .run(tauri::generate_context!())

@@ -16,6 +16,8 @@ interface SettingsModalProps {
   ttsSpeed: number;
   globalShortcut: string;
   startupRun: boolean;
+  windowOpacity: number;
+  onRepairScreenPermission: () => void;
   onSave: (settings: {
     apiMode: 'gemini' | 'openai' | 'openrouter' | 'free';
     geminiKey: string;
@@ -29,6 +31,7 @@ interface SettingsModalProps {
     ttsSpeed: number;
     globalShortcut: string;
     startupRun: boolean;
+    windowOpacity: number;
   }) => void;
 }
 
@@ -47,20 +50,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   ttsSpeed: initialTtsSpeed,
   globalShortcut: initialGlobalShortcut,
   startupRun: initialStartupRun,
+  windowOpacity: initialWindowOpacity,
+  onRepairScreenPermission,
   onSave
 }) => {
   const [apiMode, setApiMode] = useState<'gemini' | 'openai' | 'openrouter' | 'free'>(initialApiMode);
-  const [geminiKey, setGeminiKey] = useState(initialGeminiKey);
+  const [geminiKey, setGeminiKey] = useState('');
   const [geminiModel, setGeminiModel] = useState(initialGeminiModel);
-  const [openaiKey, setOpenaiKey] = useState(initialOpenaiKey);
+  const [openaiKey, setOpenaiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState(initialOpenaiModel);
-  const [openrouterKey, setOpenrouterKey] = useState(initialOpenrouterKey);
+  const [openrouterKey, setOpenrouterKey] = useState('');
   const [openrouterModel, setOpenrouterModel] = useState(initialOpenrouterModel);
   const [autoTranslate, setAutoTranslate] = useState(initialAutoTranslate);
   const [ttsVoice, setTtsVoice] = useState(initialTtsVoice);
   const [ttsSpeed, setTtsSpeed] = useState(initialTtsSpeed);
   const [globalShortcut, setGlobalShortcut] = useState(initialGlobalShortcut);
   const [startupRun, setStartupRun] = useState(initialStartupRun);
+  const [windowOpacity, setWindowOpacity] = useState(initialWindowOpacity);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   useEffect(() => {
@@ -90,7 +96,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       ttsVoice,
       ttsSpeed,
       globalShortcut,
-      startupRun
+      startupRun,
+      windowOpacity
     });
     onClose();
   };
@@ -133,7 +140,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   id="gemini-key-input"
                   type="password"
                   className="form-control"
-                  placeholder="Cole sua chave API do Gemini aqui..."
+                  placeholder={initialGeminiKey ? "Chave salva no cofre do sistema. Preencha para substituir." : "Cole sua chave API do Gemini aqui..."}
                   value={geminiKey}
                   onChange={(e) => setGeminiKey(e.target.value)}
                 />
@@ -168,7 +175,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   id="openai-key-input"
                   type="password"
                   className="form-control"
-                  placeholder="Cole sua chave API da OpenAI aqui..."
+                  placeholder={initialOpenaiKey ? "Chave salva no cofre do sistema. Preencha para substituir." : "Cole sua chave API da OpenAI aqui..."}
                   value={openaiKey}
                   onChange={(e) => setOpenaiKey(e.target.value)}
                 />
@@ -194,7 +201,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   id="openrouter-key-input"
                   type="password"
                   className="form-control"
-                  placeholder="Cole sua chave API do OpenRouter aqui..."
+                  placeholder={initialOpenrouterKey ? "Chave salva no cofre do sistema. Preencha para substituir." : "Cole sua chave API do OpenRouter aqui..."}
                   value={openrouterKey}
                   onChange={(e) => setOpenrouterKey(e.target.value)}
                 />
@@ -244,6 +251,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <span>Iniciar o aplicativo automaticamente com o sistema</span>
               </label>
             </div>
+
+            <div className="form-group" style={{ marginTop: '12px' }}>
+              <label htmlFor="opacity-range" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>Transparência da Janela</span>
+                <span>{Math.round(windowOpacity * 100)}%</span>
+              </label>
+              <input
+                id="opacity-range"
+                type="range"
+                min="0.45"
+                max="1"
+                step="0.05"
+                className="form-control"
+                style={{ padding: 0, height: 'auto' }}
+                value={windowOpacity}
+                onChange={(e) => setWindowOpacity(parseFloat(e.target.value))}
+              />
+            </div>
+          </div>
+
+          {/* macOS Screen Recording Section */}
+          <div className="settings-section">
+            <h4 className="settings-label">Permissão de Captura</h4>
+            <div className="settings-help-box">
+              <span>
+                Se o macOS continuar pedindo Gravação de Tela mesmo com o LingoSnap ativado, repare a permissão e reinicie o app depois de conceder acesso novamente.
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ marginTop: '8px', width: '100%' }}
+              onClick={onRepairScreenPermission}
+            >
+              Reparar permissão de gravação de tela
+            </button>
           </div>
 
           {/* Global Shortcut Section */}
